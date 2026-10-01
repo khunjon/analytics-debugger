@@ -3,18 +3,31 @@ import { defineBackground } from 'wxt/utils/define-background';
 import { matchVendor } from '@/lib/decoders/match';
 import type { VendorId } from '@/lib/decoders/types';
 import {
+  assembleTimeline,
+  chunkEvents,
+  chunkOf,
   clearTimeline,
   commitPage,
   emptyTimeline,
   findHit,
   hitsOnLatestPage,
   insertEvent,
+  MAX_BYTES,
   newId,
   resolvePage,
+  storedRecord,
   trim,
 } from '@/lib/timeline';
 import { HANDOFF_KEY, LOADED_CORE_KEY, readBuild } from '@/lib/live-update';
-import { tabKey, type HitEvent, type RuntimeMessage, type TabTimeline, type TimelineEvent } from '@/lib/types';
+import {
+  chunkKey,
+  tabKey,
+  type HitEvent,
+  type RuntimeMessage,
+  type StoredTimeline,
+  type TabTimeline,
+  type TimelineEvent,
+} from '@/lib/types';
 
 const MAX_BODY = 200_000;
 const ALL_URLS = { urls: ['<all_urls>'] };
@@ -46,11 +59,22 @@ function readBody(body: Browser.webRequest.OnBeforeRequestDetails['requestBody']
   return undefined;
 }
 
+/** A tab's timeline in memory, plus what it takes to write back only what changed. */
+interface Tab {
+  t: TabTimeline;
+  /** Chunks in storage, with their size in bytes when last written. */
+  stored: Map<number, number>;
+  /** Chunks to rewrite on the next flush. */
+  changed: Set<number>;
+}
+
+type Touch = (e: TimelineEvent) => void;
+
 export default defineBackground(() => {
   // The service worker can be stopped at any time, so chrome.storage.session is the source of truth.
   // This cache only avoids re-reading it on every event while the worker is alive.
-  const cache = new Map<number, TabTimeline>();
-  const loading = new Map<number, Promise<TabTimeline>>();
+  const cache = new Map<number, Tab>();
+  const loading = new Map<number, Promise<Tab>>();
   const dirty = new Set<number>();
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -117,77 +141,153 @@ export default defineBackground(() => {
   }
 
   browser.runtime.onInstalled.addListener(() => void reattachTabs());
-  void checkBuild();
-  setInterval(() => void checkBuild(), 1000);
+  // Release builds have no build.json: check once and stop.
+  const buildPoll = setInterval(() => void checkBuild(), 1000);
+  void readBuild().then((build) => {
+    if (build) void checkBuild();
+    else clearInterval(buildPoll);
+  });
 
   // ---- Timeline storage ----
 
-  function load(tabId: number): Promise<TabTimeline> {
+  async function readTab(tabId: number): Promise<Tab> {
+    await ready;
+    const key = tabKey(tabId);
+    const record = (await browser.storage.session.get(key))[key] as StoredTimeline | undefined;
+    if (!record) return { t: emptyTimeline(tabId), stored: new Map(), changed: new Set() };
+    const keys = (record.chunks ?? []).map((c) => chunkKey(tabId, c));
+    const chunks = keys.length ? await browser.storage.session.get(keys) : {};
+    const chunk = (c: number) => chunks[chunkKey(tabId, c)] as TimelineEvent[] | undefined;
+    const t = assembleTimeline(record, chunk);
+    const stored = new Map((record.chunks ?? []).map((c) => [c, JSON.stringify(chunk(c) ?? []).length]));
+    // A record from before chunking keeps its events inline: rewrite them as chunks.
+    return { t, stored, changed: new Set(record.chunks ? [] : t.events.map(chunkOf)) };
+  }
+
+  function load(tabId: number): Promise<Tab> {
     const cached = cache.get(tabId);
     if (cached) return Promise.resolve(cached);
     let pending = loading.get(tabId);
     if (!pending) {
-      pending = ready.then(() => browser.storage.session.get(tabKey(tabId))).then((stored) => {
-        const t = (stored[tabKey(tabId)] as TabTimeline | undefined) ?? emptyTimeline(tabId);
-        cache.set(tabId, t);
+      pending = readTab(tabId).then((tab) => {
+        cache.set(tabId, tab);
         loading.delete(tabId);
-        return t;
+        return tab;
       });
       loading.set(tabId, pending);
     }
     return pending;
   }
 
-  /** Mutate a tab's timeline. Return false from `mutate` when nothing changed to skip the write. */
-  async function update(tabId: number, mutate: (t: TabTimeline) => boolean | void): Promise<void> {
-    const t = await load(tabId);
-    if (mutate(t) === false) return;
-    t.rev++;
-    t.updated = Date.now();
+  /**
+   * Mutate a tab's timeline. `mutate` calls `touch` on every event it adds or changes, so the flush
+   * rewrites just their chunks, and returns false when nothing changed to skip the write.
+   */
+  async function update(tabId: number, mutate: (t: TabTimeline, touch: Touch) => boolean | void): Promise<void> {
+    const tab = await load(tabId);
+    const touch: Touch = (e) => tab.changed.add(chunkOf(e));
+    if (mutate(tab.t, touch) === false) return;
+    tab.t.rev++;
+    tab.t.updated = Date.now();
     dirty.add(tabId);
     flushTimer ??= setTimeout(flush, 50);
   }
 
-  async function write(t: TabTimeline): Promise<void> {
-    trim(t);
+  const add = (t: TabTimeline, touch: Touch, e: TimelineEvent) => {
+    insertEvent(t, e);
+    touch(e);
+  };
+
+  const storedBytes = (tab: Tab) => [...tab.stored.values()].reduce((a, b) => a + b, 0);
+
+  async function writeChanges(tab: Tab): Promise<void> {
+    const { t } = tab;
+    for (const e of trim(t, MAX_BYTES, storedBytes(tab))) tab.changed.add(chunkOf(e));
+    // Events that arrive while this write is in flight mark chunks for the next one.
+    const writing = tab.changed;
+    tab.changed = new Set();
     try {
-      await browser.storage.session.set({ [tabKey(t.tabId)]: t });
-    } catch {
-      // Over the session storage quota: drop the least recently updated other tabs, then this tab's oldest half.
-      await evictOtherTabs(t.tabId);
-      trim(t, JSON.stringify(t).length / 2);
-      await browser.storage.session.set({ [tabKey(t.tabId)]: t }).catch(() => {});
+      const byChunk = chunkEvents(t.events, writing);
+      const sizes = new Map(tab.stored);
+      const items: Record<string, unknown> = {};
+      const gone: string[] = [];
+      for (const c of writing) {
+        const events = byChunk.get(c);
+        if (events) {
+          items[chunkKey(t.tabId, c)] = events;
+          sizes.set(c, JSON.stringify(events).length);
+        } else if (sizes.delete(c)) {
+          gone.push(chunkKey(t.tabId, c));
+        }
+      }
+      // One set() so the panel sees the record and its chunks change together.
+      items[tabKey(t.tabId)] = storedRecord(t, sizes.keys());
+      await browser.storage.session.set(items);
+      tab.stored = sizes;
+      if (gone.length) await browser.storage.session.remove(gone);
+    } catch (err) {
+      for (const c of writing) tab.changed.add(c);
+      throw err;
     }
   }
 
-  async function flush(): Promise<void> {
-    flushTimer = undefined;
-    const tabIds = [...dirty];
-    dirty.clear();
-    for (const tabId of tabIds) {
-      const t = cache.get(tabId);
-      if (!t) continue;
-      await write(t);
-      const hits = hitsOnLatestPage(t);
-      browser.action.setBadgeText({ tabId, text: hits ? String(hits) : '' }).catch(() => {});
+  async function write(tab: Tab): Promise<void> {
+    try {
+      await writeChanges(tab);
+    } catch {
+      // Over the session storage quota: drop the least recently updated other tabs, then this tab's oldest half.
+      await evictOtherTabs(tab.t.tabId);
+      const bytes = storedBytes(tab);
+      for (const e of trim(tab.t, bytes / 2, bytes)) tab.changed.add(chunkOf(e));
+      await writeChanges(tab).catch(() => {});
     }
+  }
+
+  // Writes run one at a time: each reads and updates what the previous one stored.
+  let writes: Promise<void> = Promise.resolve();
+  const serially = (task: () => Promise<void>): Promise<void> => (writes = writes.then(task).catch(() => {}));
+
+  function flush(): Promise<void> {
+    flushTimer = undefined;
+    return serially(async () => {
+      const tabIds = [...dirty];
+      dirty.clear();
+      for (const tabId of tabIds) {
+        const tab = cache.get(tabId);
+        if (!tab) continue;
+        await write(tab);
+        const hits = hitsOnLatestPage(tab.t);
+        browser.action.setBadgeText({ tabId, text: hits ? String(hits) : '' }).catch(() => {});
+      }
+    });
   }
 
   async function evictOtherTabs(keep: number): Promise<void> {
     const all = await browser.storage.session.get(null);
-    const others = Object.entries(all)
-      .filter(([k]) => k.startsWith('tab:') && k !== tabKey(keep))
-      .map(([k, v]) => ({ key: k, updated: (v as TabTimeline).updated ?? 0 }))
-      .sort((a, b) => a.updated - b.updated);
-    const victims = others.slice(0, Math.max(1, Math.ceil(others.length / 2)));
-    for (const v of victims) cache.delete(Number(v.key.slice(4)));
-    if (victims.length) await browser.storage.session.remove(victims.map((v) => v.key));
+    const tabs = new Map<number, { updated: number; keys: string[] }>();
+    for (const [key, value] of Object.entries(all)) {
+      const m = key.match(/^tab:(\d+)(:\d+)?$/);
+      if (!m || Number(m[1]) === keep) continue;
+      const entry = tabs.get(Number(m[1])) ?? { updated: 0, keys: [] };
+      entry.keys.push(key);
+      if (!m[2]) entry.updated = (value as StoredTimeline).updated ?? 0;
+      tabs.set(Number(m[1]), entry);
+    }
+    const victims = [...tabs].sort(([, a], [, b]) => a.updated - b.updated).slice(0, Math.max(1, Math.ceil(tabs.size / 2)));
+    for (const [tabId] of victims) cache.delete(tabId);
+    const keys = victims.flatMap(([, v]) => v.keys);
+    if (keys.length) await browser.storage.session.remove(keys);
   }
 
-  async function forget(tabId: number): Promise<void> {
+  function forget(tabId: number): Promise<void> {
     cache.delete(tabId);
     dirty.delete(tabId);
-    await browser.storage.session.remove(tabKey(tabId));
+    // After any write in flight, so it can't put the tab back.
+    return serially(async () => {
+      const key = tabKey(tabId);
+      const record = (await browser.storage.session.get(key))[key] as StoredTimeline | undefined;
+      await browser.storage.session.remove([key, ...(record?.chunks ?? []).map((c) => chunkKey(tabId, c))]);
+    });
   }
 
   // ---- Network hits ----
@@ -197,7 +297,7 @@ export default defineBackground(() => {
     'requestId' | 'url' | 'method' | 'type' | 'tabId' | 'frameId' | 'parentDocumentId' | 'timeStamp' | 'initiator'
   > & { documentId?: string };
 
-  function addHit(t: TabTimeline, d: RequestDetails, vendor: VendorId, extra: Partial<HitEvent>): HitEvent {
+  function addHit(t: TabTimeline, touch: Touch, d: RequestDetails, vendor: VendorId, extra: Partial<HitEvent>): HitEvent {
     const page = resolvePage(t, {
       documentId: d.documentId,
       parentDocumentId: d.parentDocumentId,
@@ -218,7 +318,7 @@ export default defineBackground(() => {
       resourceType: d.type,
       ...extra,
     };
-    insertEvent(t, hit);
+    add(t, touch, hit);
     return hit;
   }
 
@@ -228,15 +328,16 @@ export default defineBackground(() => {
       const vendor = matchVendor(details.url);
       if (!vendor) return undefined;
       const body = readBody(details.requestBody);
-      void update(details.tabId, (t) => {
+      void update(details.tabId, (t, touch) => {
         const existing = findHit(t, details.requestId);
         if (existing) {
           // Redirects reuse the request id (Adobe's first-party cookie redirect, for example).
           existing.redirectedFrom = existing.url;
           existing.url = details.url;
+          touch(existing);
           return;
         }
-        addHit(t, details, vendor, { body });
+        addHit(t, touch, details, vendor, { body });
       });
       return undefined;
     },
@@ -248,12 +349,13 @@ export default defineBackground(() => {
     if (d.tabId < 0) return;
     const vendor = matchVendor(d.url);
     if (!vendor) return;
-    void update(d.tabId, (t) => {
+    void update(d.tabId, (t, touch) => {
       // No start event means the worker was still starting when the request began (right after the
       // extension is installed or reloaded). Record it anyway rather than silently dropping a hit.
-      const hit = findHit(t, d.requestId) ?? addHit(t, d, vendor, { partial: true });
+      const hit = findHit(t, d.requestId) ?? addHit(t, touch, d, vendor, { partial: true });
       if (d.error) hit.error = d.error;
       else hit.status = d.statusCode;
+      touch(hit);
     });
   };
   browser.webRequest.onCompleted.addListener((d) => recordOutcome(d), ALL_URLS);
@@ -272,22 +374,22 @@ export default defineBackground(() => {
   const recordSameDocumentNav = (how: 'history' | 'hash') =>
     (d: { tabId: number; frameId: number; url: string; timeStamp: number; documentId?: string }) => {
       if (d.frameId !== 0) return;
-      void update(d.tabId, (t) => {
+      void update(d.tabId, (t, touch) => {
         const page = resolvePage(t, { documentId: d.documentId, frameId: 0, ts: d.timeStamp, url: d.url });
-        insertEvent(t, { kind: 'nav', id: newId(), ts: d.timeStamp, pageId: page.id, url: d.url, how });
+        add(t, touch, { kind: 'nav', id: newId(), ts: d.timeStamp, pageId: page.id, url: d.url, how });
       });
     };
   browser.webNavigation.onHistoryStateUpdated.addListener(recordSameDocumentNav('history'));
   browser.webNavigation.onReferenceFragmentUpdated.addListener(recordSameDocumentNav('hash'));
 
-  // ---- Page events (data layer, clicks) and panel requests ----
+  // ---- Page events (data layer, clicks, Tags rules, environment) and panel requests ----
 
   browser.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     const msg = raw as RuntimeMessage;
     if (msg?.type === 'adbg:page-event') {
       const tabId = sender.tab?.id;
       if (tabId == null) return undefined;
-      void update(tabId, (t) => {
+      void update(tabId, (t, touch) => {
         const page = resolvePage(t, {
           documentId: sender.documentId,
           frameId: sender.frameId,
@@ -295,7 +397,7 @@ export default defineBackground(() => {
           url: sender.url,
         });
         if (!page.committed && sender.frameId === 0 && sender.url) page.url = sender.url;
-        insertEvent(t, { ...msg.event, id: newId(), pageId: page.id, frameId: sender.frameId } as TimelineEvent);
+        add(t, touch, { ...msg.event, id: newId(), pageId: page.id, frameId: sender.frameId } as TimelineEvent);
       });
       return undefined;
     }
@@ -304,7 +406,7 @@ export default defineBackground(() => {
       return undefined;
     }
     if (msg?.type === 'adbg:clear') {
-      void update(msg.tabId, (t) => clearTimeline(t)).then(() => sendResponse(true));
+      void update(msg.tabId, (t, touch) => clearTimeline(t).forEach(touch)).then(() => sendResponse(true));
       return true;
     }
     return undefined;
@@ -312,10 +414,12 @@ export default defineBackground(() => {
 
   browser.tabs.onRemoved.addListener((tabId) => void forget(tabId));
   browser.tabs.onReplaced.addListener(async (addedTabId, removedTabId) => {
-    const t = await load(removedTabId);
+    const { t } = await load(removedTabId);
     await forget(removedTabId);
-    await update(addedTabId, (target) => {
+    await update(addedTabId, (target, touch) => {
+      const before = target.events;
       Object.assign(target, { ...t, tabId: addedTabId, rev: target.rev });
+      [...before, ...target.events].forEach(touch);
     });
   });
 });

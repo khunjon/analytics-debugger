@@ -10,8 +10,12 @@
       function gtag() {
         dataLayer.push(arguments);
       }
+      // A returning visitor: consent defaults to denied, then the stored choice is applied.
+      gtag('consent', 'default', { analytics_storage: 'denied', ad_storage: 'denied' });
+      gtag('consent', 'update', { analytics_storage: 'granted', ad_storage: 'denied' });
       gtag('js', new Date());
       gtag('config', 'G-TEST123');
+      dataLayer.push({ 'gtm.start': Date.now(), event: 'gtm.js' });
 
       // Stand-in for GTM: replaces push and calls through to the previous one.
       (function () {
@@ -23,6 +27,36 @@
 
       window.adobeDataLayer = window.adobeDataLayer || [];
       adobeDataLayer.push({ page: { name: 'pdp:widget-a', type: 'product' } });
+
+      window.digitalData = { page: { pageInfo: { pageName: 'pdp:widget-a' } } };
+    </script>
+    <script src="/gtm.js?id=GTM-FIXTURE&gtm_auth=abc&gtm_preview=env-5"></script>
+    <script>
+      // Stand-in for the Adobe Tags library: the same _satellite setup and monitor calls as Turbine.
+      window._satellite = window._satellite || {};
+      _satellite.property = { name: 'Fixture Store', id: 'PRfixture' };
+      _satellite.environment = { stage: 'development' };
+      _satellite.buildInfo = { buildDate: '2026-09-28T14:02:00Z', turbineVersion: '28.2.0' };
+      _satellite.track = function () {};
+      window.runRule = function (name, failedPath) {
+        var rule = { id: 'RL-' + name.replace(/\W+/g, '-'), name: name };
+        var notify = function (type, event) {
+          (_satellite._monitors || []).forEach(function (m) {
+            if (m[type]) m[type](event);
+          });
+        };
+        notify('ruleTriggered', { rule: rule });
+        if (failedPath) {
+          notify('ruleConditionFailed', {
+            rule: rule,
+            condition: { modulePath: 'core/src/lib/conditions/path.js', settings: { paths: [{ value: failedPath }] } },
+          });
+        } else {
+          notify('ruleCompleted', { rule: rule });
+        }
+      };
+      runRule('Library loaded: set up');
+      runRule('Checkout page view', '/checkout');
     </script>
   </head>
   <body>
@@ -34,7 +68,8 @@
     <script>
       var origin = location.origin;
 
-      // Page-load hits: AppMeasurement image request, GA4 beacon, Web SDK fetch.
+      // Page-load hits: AppMeasurement image request, GA4 beacon, Web SDK fetch, Target delivery call.
+      runRule('Page load: product detail');
       new Image().src =
         origin +
         '/b/ss/fixtureprod/1/JS-2.27.0/s111?AQB=1&pageName=pdp%3Awidget-a&events=prodView' +
@@ -53,15 +88,20 @@
           ],
         }),
       });
+      fetch(origin + '/rest/v1/delivery?client=fixture&sessionId=s1&version=2.11.0', {
+        method: 'POST',
+        body: JSON.stringify({ execute: { pageLoad: { parameters: { pageType: 'pdp' } } } }),
+      });
 
       // Adobe Tags direct call rule firing a little after load.
-      window._satellite = { track: function () {} };
       setTimeout(function () {
         _satellite.track('pdp-loaded', { sku: 'SKU123' });
       }, 300);
 
       document.getElementById('atc').addEventListener('click', function () {
         adobeDataLayer.push({ event: 'cart.add', product: { sku: 'SKU123' } });
+        digitalData.cart = { items: 1 };
+        runRule('Cart add');
         navigator.sendBeacon(
           origin + '/b/ss/fixtureprod/1/JS-2.27.0/s222',
           'AQB=1&pe=lnk_o&pev2=add%20to%20cart&events=scAdd&products=%3BSKU123%3B1%3B19.99&AQE=1',

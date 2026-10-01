@@ -8,14 +8,21 @@
   --border: #e4e4df;
   --focus: #2563eb;
   --error: #c4282d;
+  --warn: #a35f00;
   --ok: #2e7d32;
 
   --aa: #d7373f;
   --websdk: #7c4dce;
   --ga4: #c86100;
+  --target: #b8327a;
+  --optimizely: #0b5cd5;
+  --pixel: #5d6b7a;
   --datalayer: #0f8086;
+  --gtm: #6f8a3a;
+  --rule: #8a5a00;
   --interaction: #2563eb;
   --nav: #6b6b66;
+  --consent: #2e7d32;
 
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   color-scheme: light;
@@ -32,14 +39,21 @@
     --border: #353532;
     --focus: #7aa2ff;
     --error: #ff7b7f;
+    --warn: #f0b450;
     --ok: #7fc985;
 
     --aa: #ff6b70;
     --websdk: #b393ff;
     --ga4: #ffa24d;
+    --target: #ff7ab8;
+    --optimizely: #6ea8ff;
+    --pixel: #a7b4c2;
     --datalayer: #4cc6cc;
+    --gtm: #a9c46a;
+    --rule: #e0b25a;
     --interaction: #7aa2ff;
     --nav: #a3a39c;
+    --consent: #7fc985;
     color-scheme: dark;
   }
 }
@@ -183,7 +197,12 @@ button {
 .cat-adobe-analytics { --c: var(--aa); }
 .cat-adobe-websdk { --c: var(--websdk); }
 .cat-ga4 { --c: var(--ga4); }
+.cat-adobe-target { --c: var(--target); }
+.cat-optimizely { --c: var(--optimizely); }
+.cat-pixel { --c: var(--pixel); }
 .cat-datalayer { --c: var(--datalayer); }
+.cat-gtm { --c: var(--gtm); }
+.cat-rule { --c: var(--rule); }
 .cat-interaction { --c: var(--interaction); }
 .cat-nav { --c: var(--nav); }
 
@@ -209,12 +228,62 @@ button {
   position: sticky;
   top: 0;
   z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
   padding: 6px 12px;
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
+}
+
+.page-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-env {
+  margin: 3px 0 0 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.page-env > div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-label {
+  color: var(--faint);
+}
+
+.env-note {
+  color: var(--faint);
+}
+
+.page-issues {
+  color: var(--warn);
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  vertical-align: 1px;
+}
+
+.tag.nonprod {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.tag.consent {
+  color: var(--consent);
+  border-color: color-mix(in srgb, var(--consent) 45%, transparent);
 }
 
 .page-toggle {
@@ -255,6 +324,34 @@ button {
   text-decoration: underline;
 }
 
+.link[aria-pressed='true'] {
+  font-weight: 600;
+}
+
+.muted {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.params .before,
+.params .after {
+  display: block;
+}
+
+.params.changed .before,
+.params.removed .before {
+  color: var(--error);
+}
+
+.params.changed .before {
+  text-decoration: line-through;
+}
+
+.params .after {
+  color: var(--ok);
+}
+
 .no-rows {
   padding: 8px 12px 8px 30px;
   color: var(--faint);
@@ -262,6 +359,77 @@ button {
 
 .row {
   border-bottom: 1px solid var(--border);
+  /* Long timelines: the browser skips layout and paint for rows outside the viewport. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 46px;
+}
+
+/* Effects of a click: indented under it, with a guide in the click color. */
+.row.nested > .row-head {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--interaction) 40%, transparent);
+}
+
+.row.nested .badge {
+  margin-left: 12px;
+}
+
+.row.rule-failed .title {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.row.rule-failed .detail,
+.row.rule-pending .detail {
+  color: var(--faint);
+}
+
+.row.rule-ok .detail {
+  color: var(--ok);
+}
+
+.row.rule-error .detail {
+  color: var(--error);
+}
+
+.issue-line {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-line.error {
+  color: var(--error);
+}
+
+.issue-line.warn {
+  color: var(--warn);
+}
+
+.issue-line.info {
+  color: var(--muted);
+}
+
+.issue-line .more {
+  color: var(--faint);
+}
+
+.issues {
+  margin: 2px 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.issues li.error {
+  color: var(--error);
+}
+
+.issues li.warn {
+  color: var(--warn);
+}
+
+.issues li.info {
+  color: var(--muted);
 }
 
 .row-head {

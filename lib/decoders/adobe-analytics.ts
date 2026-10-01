@@ -4,6 +4,7 @@ import { byTrailingNumber, group, parseQuery, queryOf, truncate } from './util';
 const LABELS: Record<string, string> = {
   pageName: 'Page name',
   g: 'Page URL',
+  '-g': 'Page URL (continued)',
   r: 'Referrer',
   ch: 'Site section',
   server: 'Server',
@@ -53,7 +54,17 @@ const LINK_TYPES: Record<string, string> = {
   lnk_e: 'exit link',
 };
 
-const PAGE_KEYS = new Set(['pageName', 'g', 'r', 'ch', 'server', 'pageType', 'h1', 'h2', 'h3', 'h4', 'h5']);
+const BUILTIN_EVENTS: Record<string, string> = {
+  prodView: 'Product views',
+  scOpen: 'Carts',
+  scView: 'Cart views',
+  scAdd: 'Cart additions',
+  scRemove: 'Cart removals',
+  scCheckout: 'Checkouts',
+  purchase: 'Orders, units and revenue',
+};
+
+const PAGE_KEYS = new Set(['pageName', 'g', '-g', 'r', 'ch', 'server', 'pageType', 'h1', 'h2', 'h3', 'h4', 'h5']);
 const LINK_KEYS = new Set(['pe', 'pev1', 'pev2', 'pev3']);
 const COMMERCE_KEYS = new Set(['events', 'products', 'purchaseID', 'xact', 'cc', 'state', 'zip', 'v0']);
 const IDENTITY_KEYS = new Set(['mid', 'aid', 'vid', 'fid', 'mcorgid', 'aamb', 'aamlh', 'sdid', 'tnt']);
@@ -91,17 +102,56 @@ function splitContextData(params: [string, string][]) {
   return { regular, context };
 }
 
+export interface AaEvent {
+  name: string;
+  /** Numeric or currency value (`event5=2`). */
+  value?: string;
+  /** Serialization ID (`event1:abc123`). */
+  serial?: string;
+}
+
+/** `purchase,event5=2,event1:abc123` -> one entry per event. */
+export function parseEvents(events: string): AaEvent[] {
+  return events
+    .split(',')
+    .map((raw) => raw.trim())
+    .filter(Boolean)
+    .map((raw) => {
+      const name = raw.match(/^[^=:]+/)?.[0] ?? raw;
+      const rest = raw.slice(name.length);
+      return { name, value: rest.match(/=([^:]*)/)?.[1], serial: rest.match(/:([^=]*)/)?.[1] };
+    });
+}
+
+function eventRows(events: string): ParamRow[] {
+  return parseEvents(events).map(({ name, value, serial }) => {
+    const note = [BUILTIN_EVENTS[name], serial !== undefined && `serialized, ID ${serial}`].filter(Boolean).join(' · ');
+    return { key: `events.${name}`, value: value ?? '1', note: note || undefined };
+  });
+}
+
+export interface AaProduct {
+  category: string;
+  product: string;
+  quantity: string;
+  price: string;
+  /** `event10=5|event11=2` */
+  events: string;
+  /** `eVar20=red|eVar21=blue` */
+  evars: string;
+}
+
+export function parseProducts(products: string): AaProduct[] {
+  return products.split(',').map((entry) => {
+    const [category = '', product = '', quantity = '', price = '', events = '', evars = ''] = entry.split(';');
+    return { category, product, quantity, price, events, evars };
+  });
+}
+
 /** `;Category;SKU;qty;price;events;eVars` entries, comma separated. */
 function productRows(products: string): ParamRow[] {
-  return products.split(',').map((entry, i) => {
-    const [category, product, qty, price, events, evars] = entry.split(';');
-    const note = [
-      category && `category ${category}`,
-      qty && `qty ${qty}`,
-      price && `price ${price}`,
-      events && events,
-      evars && evars,
-    ]
+  return parseProducts(products).map(({ category, product, quantity, price, events, evars }, i) => {
+    const note = [category && `category ${category}`, quantity && `qty ${quantity}`, price && `price ${price}`, events, evars]
       .filter(Boolean)
       .join(' · ');
     return { key: `product ${i + 1}`, value: product || '(no product)', note: note || undefined };
@@ -183,6 +233,7 @@ function decode(req: CapturedRequest): DecodedEvent[] {
         ...group('Page', page),
         ...group('Link', link),
         ...group('Commerce', commerce),
+        ...group('Events', events ? eventRows(events) : []),
         ...group('Products', products ? productRows(products) : []),
         ...group('eVars', evars),
         ...group('Props', props),

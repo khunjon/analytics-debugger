@@ -21,6 +21,8 @@ This is a public GitHub repo (khunjon/analytics-debugger, MIT). Never commit cli
 ## Gotchas
 
 - `chrome.storage.session` sorts object keys alphabetically. Anything whose key order matters, like data layer payloads, is stored as a JSON string.
+- A tab's timeline is stored as a record (`tab:<id>`) plus its events in chunks by arrival order (`tab:<id>:<chunk>`), so a write touches only what changed. In `background.ts`, a mutation must `touch()` every event it adds or changes, or the change is never written. The panel's rows are cached by event object, which stays the same while its chunk is unchanged; that's what keeps re-renders cheap.
+- Adobe Tags calls `_satellite._monitors` without a try/catch, so the monitor in `lib/page-hooks.ts` must never throw.
 - Session storage is wiped when the extension reloads. `reloadKeepingTimelines()` in `background.ts` hands the timelines over through `storage.local`; any new session-stored state that should survive an update needs the same treatment.
 - Code in `lib/page-hooks.ts` runs inside client sites. It must never throw into the page or change behavior. Wrappers call straight through and never dispatch dynamically, because that causes recursion with GTM's own push wrapper.
 - The service worker can stop at any time. `chrome.storage.session` is the source of truth, and the in-memory cache in `background.ts` is only an optimization.

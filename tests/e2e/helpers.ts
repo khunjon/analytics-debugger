@@ -6,7 +6,8 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { chromium, expect, type BrowserContext, type Worker } from '@playwright/test';
-import type { TabTimeline, TimelineEvent } from '../../lib/types';
+import { assembleTimeline } from '../../lib/timeline';
+import type { StoredTimeline, TabTimeline, TimelineEvent } from '../../lib/types';
 
 export const ROOT = path.resolve(import.meta.dirname, '../..');
 export const BUILT_EXTENSION = path.join(ROOT, '.output/chrome-mv3');
@@ -17,9 +18,15 @@ const SITE = path.join(import.meta.dirname, 'site');
 export async function startSite(): Promise<{ origin: string; close: () => void }> {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (/\/b\/ss\/|\/g\/collect|\/ee\//.test(url.pathname)) {
+    if (/\/b\/ss\/|\/g\/collect|\/ee\/|\/rest\/v1\/delivery/.test(url.pathname)) {
       req.resume();
       res.writeHead(204).end();
+      return;
+    }
+    if (url.pathname === '/gtm.js') {
+      // Stand-in for a GTM container: registers itself the way gtm.js does.
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      res.end(`window.google_tag_manager = window.google_tag_manager || {}; google_tag_manager[${JSON.stringify(url.searchParams.get('id'))}] = {};`);
       return;
     }
     const file = path.join(SITE, url.pathname === '/' || url.pathname === '/cart' ? 'index.html' : url.pathname);
@@ -60,19 +67,26 @@ export async function launchWithExtension(dir: string): Promise<{ context: Brows
   return { context, worker: await readyWorker(worker) };
 }
 
+/** The timeline the background stored for the tab at `origin`: its record plus event chunks. */
 export async function timelineFor(worker: Worker, origin: string): Promise<TabTimeline> {
-  return worker.evaluate(async (prefix) => {
+  const { record, chunks } = await worker.evaluate(async (prefix) => {
     const tabs = await chrome.tabs.query({});
     const tab = tabs.find((t) => t.url?.startsWith(prefix));
     if (!tab?.id) throw new Error(`no tab for ${prefix}`);
     const key = `tab:${tab.id}`;
-    return (await chrome.storage.session.get(key))[key] as TabTimeline;
+    const all = await chrome.storage.session.get(null);
+    return { record: all[key], chunks: Object.fromEntries(Object.entries(all).filter(([k]) => k.startsWith(`${key}:`))) };
   }, origin);
+  if (!record) return record as TabTimeline;
+  const stored = record as StoredTimeline;
+  return assembleTimeline(stored, (c) => chunks[`tab:${stored.tabId}:${c}`] as TimelineEvent[] | undefined);
 }
 
 export const describeEvent = (e: TimelineEvent) => {
   if (e.kind === 'hit') return `hit:${e.vendor}:${new URL(e.url).pathname.split('/').pop()}:${e.status ?? e.error}`;
   if (e.kind === 'datalayer') return `dl:${e.source}:${e.payload.slice(0, 40)}`;
   if (e.kind === 'interaction') return `${e.action}:${e.text}`;
+  if (e.kind === 'rule') return `rule:${e.phase}:${e.ruleName}`;
+  if (e.kind === 'env') return `env:${e.source}`;
   return `nav:${new URL(e.url).pathname}`;
 };

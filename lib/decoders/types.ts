@@ -1,4 +1,4 @@
-export type VendorId = 'adobe-analytics' | 'adobe-websdk' | 'ga4';
+export type VendorId = 'adobe-analytics' | 'adobe-websdk' | 'ga4' | 'adobe-target' | 'optimizely' | 'pixel';
 
 export interface ParamRow {
   /** The key as it appears on the wire, e.g. `v12` or `ep.transaction_id`. */

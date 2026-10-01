@@ -72,6 +72,35 @@ function decodeEvent(ev: Json, requestRows: ParamRow[], configId: string | undef
   };
 }
 
+/** One consent entry: Adobe 2.0 `{collect: {val: 'y'}}`, Adobe 1.0 `{general: 'in'}`, or an IAB TCF string. */
+export function describeConsentEntry(entry: Json): string {
+  const value = entry?.value;
+  if (entry?.standard === 'Adobe' && value && typeof value === 'object') {
+    return Object.entries(value as Json)
+      .filter(([k]) => k !== 'metadata')
+      .map(([k, v]) => `${k}=${v && typeof v === 'object' ? (v as Json).val : v}`)
+      .join(', ');
+  }
+  return `${entry?.standard ?? 'unknown'} ${entry?.version ?? ''}`.trim();
+}
+
+function decodeSetConsent(payload: Json | undefined, requestRows: ParamRow[], configId: string | undefined): DecodedEvent {
+  const consent: Json[] = Array.isArray(payload?.consent) ? payload.consent : [];
+  return {
+    vendor: 'adobe-websdk',
+    eventName: 'setConsent',
+    detail: consent.map(describeConsentEntry).join('; ') || undefined,
+    account: configId,
+    accountLabel: 'Datastream',
+    summary: [],
+    groups: [
+      ...group('Consent', rowsOf(consent, 'consent')),
+      ...group('Identity', rowsOf(payload?.identityMap, 'identityMap')),
+      ...group('Request', requestRows),
+    ],
+  };
+}
+
 function decode(req: CapturedRequest): DecodedEvent[] {
   const url = new URL(req.url);
   const configId = url.searchParams.get('configId') ?? undefined;
@@ -80,6 +109,12 @@ function decode(req: CapturedRequest): DecodedEvent[] {
     payload = req.body ? JSON.parse(req.body) : undefined;
   } catch {
     payload = undefined;
+  }
+
+  if (url.pathname.endsWith('/privacy/set-consent')) {
+    return [
+      decodeSetConsent(payload, [{ key: 'endpoint', label: 'Edge endpoint', value: `${url.host}${url.pathname}` }], configId),
+    ];
   }
 
   const requestRows: ParamRow[] = [

@@ -1,11 +1,14 @@
+import type { Issue } from './checks';
 import { decoderFor, type DecodedEvent } from './decoders';
 import type { HitEvent } from './types';
-import { badgeFor, clockTime, dataLayerTitle, hitStatus, relativeTime, type PageGroup, type Row } from './view';
+import { badgeFor, clockTime, dataLayerTitle, hitStatus, relativeTime, ruleOutcome, type PageGroup, type Row } from './view';
 import type { WatchCell } from './watch';
 
 const cell = (s: string | undefined) => (s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 
-export function decodedToMarkdown(d: DecodedEvent, hit: HitEvent, heading = '####'): string {
+const issueLines = (issues: Issue[] | undefined) => (issues?.length ? [...issues.map((i) => `- **${i.level}:** ${i.message}`), ''] : []);
+
+export function decodedToMarkdown(d: DecodedEvent, hit: HitEvent, heading = '####', issues?: Issue[]): string {
   const vendor = decoderFor(d.vendor).label;
   const lines = [`${heading} ${vendor}: ${d.eventName}${d.detail ? ` (${d.detail})` : ''}`, ''];
   const meta = [
@@ -13,7 +16,7 @@ export function decodedToMarkdown(d: DecodedEvent, hit: HitEvent, heading = '###
     clockTime(hit.ts),
     `status: ${hitStatus(hit).label}`,
   ].filter(Boolean);
-  lines.push(meta.join(' · '), '');
+  lines.push(meta.join(' · '), '', ...issueLines(issues));
   for (const g of d.groups) {
     lines.push(`**${g.title}**`, '', '| Name | Key | Value |', '|---|---|---|');
     for (const r of g.rows) {
@@ -30,11 +33,13 @@ function rowTitle(row: Row): string {
     case 'hit':
       return `${row.decoded.eventName}${row.decoded.detail ? ` (${row.decoded.detail})` : ''}`;
     case 'datalayer':
-      return dataLayerTitle(row.event);
+      return dataLayerTitle(row.event, row.changed);
     case 'interaction':
       return `"${row.event.text}" ${row.event.selector}`;
     case 'nav':
       return row.event.url;
+    case 'rule':
+      return `${row.event.ruleName}: ${ruleOutcome(row).label}`;
   }
 }
 
@@ -64,7 +69,7 @@ export function pageToWatchMarkdown(group: PageGroup, terms: string[], watch: Ma
   ].join('\n');
 }
 
-export function pageToMarkdown(group: PageGroup): string {
+export function pageToMarkdown(group: PageGroup, issues?: Map<string, Issue[]>): string {
   const { page, rows } = group;
   const lines = [
     `### ${page.url || '(page loaded before capture started)'}`,
@@ -73,13 +78,16 @@ export function pageToMarkdown(group: PageGroup): string {
     '',
     '| Time | Source | Event | Details |',
     '|---|---|---|---|',
-    ...rows.map((r) => `| ${relativeTime(r.ts, page.ts)} | ${badgeFor(r)} | ${cell(rowTitle(r))} | ${cell(rowDetail(r))} |`),
+    ...rows.map((r) => {
+      const flagged = issues?.get(r.key)?.length ? ' ⚠' : '';
+      return `| ${relativeTime(r.ts, page.ts)} | ${badgeFor(r)} | ${cell(rowTitle(r))}${flagged} | ${cell(rowDetail(r))} |`;
+    }),
     '',
   ];
   const hits = rows.filter((r): r is Extract<Row, { type: 'hit' }> => r.type === 'hit');
   if (hits.length) {
     lines.push('#### Hit details', '');
-    for (const h of hits) lines.push(decodedToMarkdown(h.decoded, h.event, '#####'));
+    for (const h of hits) lines.push(decodedToMarkdown(h.decoded, h.event, '#####', issues?.get(h.key)));
   }
   return lines.join('\n');
 }

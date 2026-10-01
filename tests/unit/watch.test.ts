@@ -54,6 +54,7 @@ function timeline(events: TimelineEvent[]): TabTimeline {
     pages: [{ id: 'p1', ts: 0, url: 'https://www.example.com/', committed: true }],
     events,
     docToPage: {},
+    nextSeq: events.length,
   };
 }
 

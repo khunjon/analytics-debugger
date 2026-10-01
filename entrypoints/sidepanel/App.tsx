@@ -1,151 +1,53 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { browser, type Browser } from 'wxt/browser';
-import { readBuild, type BuildInfo } from '@/lib/live-update';
-import { tabKey, type RuntimeMessage, type TabTimeline } from '@/lib/types';
-import { buildGroups, CATEGORIES, filterGroups, rowCategory, type Category } from '@/lib/view';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { browser } from 'wxt/browser';
+import { analyze } from '@/lib/checks';
+import { hostOf } from '@/lib/format';
+import type { RuntimeMessage } from '@/lib/types';
+import { buildGroups, CATEGORIES, filterGroups, HIDDEN_BY_DEFAULT, rowCategory, type Category } from '@/lib/view';
+import { TimelineContext } from './context';
+import { useLiveUpdates, useStableArray, useStableIssues, useTargetTab, useTimeline } from './hooks';
 import { PageSection } from './PageSection';
 
-const FILTERS_KEY = 'adbg.filters';
+const HIDDEN_KEY = 'adbg.hidden';
 const QUERY_KEY = 'adbg.query';
+/** Before the hidden list, the shown chips were saved, from this set. */
+const LEGACY_FILTERS_KEY = 'adbg.filters';
+const LEGACY_CATEGORIES: Category[] = ['adobe-analytics', 'adobe-websdk', 'ga4', 'datalayer', 'interaction', 'nav'];
 
-function loadFilters(): Set<Category> {
+/** Hidden categories are saved rather than shown ones, so categories added later start out visible. */
+function loadHidden(): Set<Category> {
   try {
-    const raw = localStorage.getItem(FILTERS_KEY);
+    const raw = localStorage.getItem(HIDDEN_KEY);
     if (raw) return new Set(JSON.parse(raw) as Category[]);
+    const legacy = localStorage.getItem(LEGACY_FILTERS_KEY);
+    if (legacy) {
+      const shown = new Set(JSON.parse(legacy) as Category[]);
+      return new Set([...LEGACY_CATEGORIES.filter((c) => !shown.has(c)), ...HIDDEN_BY_DEFAULT]);
+    }
   } catch {
     /* storage unavailable */
   }
-  return new Set(CATEGORIES.map((c) => c.id));
+  return new Set(HIDDEN_BY_DEFAULT);
 }
 
-/** The tab to show: `?tabId=` when popped out, otherwise whichever tab is active in this window. */
-function useTargetTab() {
-  const pinned = useMemo(() => {
-    const v = new URLSearchParams(location.search).get('tabId');
-    return v ? Number(v) : null;
-  }, []);
-  const [tabId, setTabId] = useState<number | null>(pinned);
-  const [tab, setTab] = useState<Browser.tabs.Tab | null>(null);
-
-  useEffect(() => {
-    if (pinned != null) return;
-    let windowId: number | undefined;
-    const onActivated = (info: { tabId: number; windowId: number }) => {
-      if (info.windowId === windowId) setTabId(info.tabId);
-    };
-    void browser.windows.getCurrent().then(async (w) => {
-      windowId = w.id;
-      const [active] = await browser.tabs.query({ active: true, windowId: w.id });
-      if (active?.id != null) setTabId(active.id);
+function useToggleSet(initial: () => Set<string>) {
+  const [set, setSet] = useState(initial);
+  const toggle = useCallback((id: string) => {
+    setSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-    browser.tabs.onActivated.addListener(onActivated);
-    return () => browser.tabs.onActivated.removeListener(onActivated);
-  }, [pinned]);
-
-  useEffect(() => {
-    if (tabId == null) return;
-    browser.tabs.get(tabId).then(setTab, () => setTab(null));
-    const onUpdated = (id: number, _info: unknown, t: Browser.tabs.Tab) => {
-      if (id === tabId) setTab(t);
-    };
-    browser.tabs.onUpdated.addListener(onUpdated);
-    return () => browser.tabs.onUpdated.removeListener(onUpdated);
-  }, [tabId]);
-
-  return { tabId, tab, pinned: pinned != null };
-}
-
-function useTimeline(tabId: number | null): TabTimeline | null {
-  const [timeline, setTimeline] = useState<TabTimeline | null>(null);
-  useEffect(() => {
-    setTimeline(null);
-    if (tabId == null) return;
-    const key = tabKey(tabId);
-    let latestRev = -1;
-    const accept = (t: TabTimeline | undefined) => {
-      if (!t) {
-        latestRev = -1;
-        setTimeline(null);
-      } else if (t.rev >= latestRev) {
-        latestRev = t.rev;
-        setTimeline(t);
-      }
-    };
-    void browser.storage.session.get(key).then((r) => accept(r[key] as TabTimeline | undefined));
-    const listener = (changes: Record<string, Browser.storage.StorageChange>, area: string) => {
-      if (area === 'session' && changes[key]) accept(changes[key].newValue as TabTimeline | undefined);
-    };
-    browser.storage.onChanged.addListener(listener);
-    return () => browser.storage.onChanged.removeListener(listener);
-  }, [tabId]);
-  return timeline;
-}
-
-const UPDATED_FLAG = 'adbg.updated';
-
-/**
- * Refresh the panel in place when only panel code changed. When background or content scripts changed,
- * nudge the background, which reloads the whole extension (closing this panel) and keeps the timelines.
- * Returns true for a few seconds after an in-place refresh.
- */
-function useLiveUpdates(): boolean {
-  const [justUpdated, setJustUpdated] = useState(() => {
-    try {
-      const flagged = sessionStorage.getItem(UPDATED_FLAG) != null;
-      sessionStorage.removeItem(UPDATED_FLAG);
-      return flagged;
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    if (!justUpdated) return;
-    const t = setTimeout(() => setJustUpdated(false), 4000);
-    return () => clearTimeout(t);
-  }, [justUpdated]);
-
-  useEffect(() => {
-    let loaded: BuildInfo | undefined;
-    const check = async () => {
-      const build = await readBuild();
-      if (!build) return;
-      if (!loaded) {
-        loaded = build;
-      } else if (build.core !== loaded.core) {
-        const msg: RuntimeMessage = { type: 'adbg:check-build' };
-        void browser.runtime.sendMessage(msg).catch(() => {});
-      } else if (build.panel !== loaded.panel) {
-        try {
-          sessionStorage.setItem(UPDATED_FLAG, '1');
-        } catch {
-          /* storage unavailable */
-        }
-        location.reload();
-      }
-    };
-    void check();
-    const id = setInterval(check, 1000);
-    return () => clearInterval(id);
   }, []);
-
-  return justUpdated;
-}
-
-function hostOf(url: string | undefined): string {
-  if (!url) return '';
-  try {
-    return new URL(url).host || url;
-  } catch {
-    return url;
-  }
+  return [set, toggle, setSet] as const;
 }
 
 export function App() {
   const { tabId, tab, pinned } = useTargetTab();
   const timeline = useTimeline(tabId);
   const justUpdated = useLiveUpdates();
-  const [filters, setFilters] = useState(loadFilters);
+  const [hidden, setHidden] = useState(loadHidden);
   // Kept for the panel's lifetime, including in-place refreshes after an update.
   const [query, setQuery] = useState(() => {
     try {
@@ -162,24 +64,28 @@ export function App() {
       /* storage unavailable */
     }
   };
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [expanded, toggleExpanded, setExpanded] = useToggleSet(() => new Set());
+  const [collapsed, togglePage] = useToggleSet(() => new Set());
 
   const groups = useMemo(() => (timeline ? buildGroups(timeline) : []), [timeline]);
-  const { groups: visible, terms, watch } = useMemo(() => filterGroups(groups, filters, query), [groups, filters, query]);
+  const byPage = useMemo(() => new Map(groups.map((g) => [g.page.id, g])), [groups]);
+  const issues = useStableIssues(useMemo(() => analyze(groups), [groups]));
+  const enabled = useMemo(() => new Set(CATEGORIES.map((c) => c.id).filter((id) => !hidden.has(id))), [hidden]);
+  const { groups: visible, terms, watch } = useMemo(() => filterGroups(groups, enabled, query), [groups, enabled, query]);
+  const watchTerms = useStableArray(terms.watch);
   const counts = useMemo(() => {
     const c = new Map<Category, number>();
     for (const g of groups) for (const r of g.rows) c.set(rowCategory(r), (c.get(rowCategory(r)) ?? 0) + 1);
     return c;
   }, [groups]);
 
-  const toggleFilter = (id: Category) => {
-    setFilters((prev) => {
+  const toggleCategory = (id: Category) => {
+    setHidden((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       try {
-        localStorage.setItem(FILTERS_KEY, JSON.stringify([...next]));
+        localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next]));
       } catch {
         /* storage unavailable */
       }
@@ -200,24 +106,13 @@ export function App() {
     if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   };
 
-  const toggleRow = useCallback((key: string) => {
-    follow.current = false;
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
-  const togglePage = useCallback((id: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggleRow = useCallback(
+    (key: string) => {
+      follow.current = false;
+      toggleExpanded(key);
+    },
+    [toggleExpanded],
+  );
 
   const clear = () => {
     if (tabId == null) return;
@@ -240,90 +135,94 @@ export function App() {
   const hasEvents = groups.some((g) => g.rows.length > 0);
 
   return (
-    <div className="app">
-      <header className="toolbar">
-        <div className="toolbar-row">
-          <div className="tab-info" title={tab?.url}>
-            <span className="tab-host">{hostOf(tab?.url) || 'No tab'}</span>
-            {pinned && <span className="pill">pinned to tab</span>}
-            {justUpdated && <span className="pill updated">updated</span>}
-          </div>
-          {!pinned && (
-            <button type="button" className="tool" onClick={popOut} title="Open this tab's timeline in its own window">
-              Pop out
-            </button>
-          )}
-          <button type="button" className="tool" onClick={clear} title="Clear captured events for this tab">
-            Clear
-          </button>
-        </div>
-        <input
-          className="search"
-          type="search"
-          placeholder="Search, or watch variables: eVar12, events, page_location"
-          value={query}
-          onChange={(e) => updateQuery(e.target.value)}
-        />
-        {terms.watch.length > 0 && (
-          <div className="watch-hint">
-            Watching{' '}
-            {terms.watch.map((t) => (
-              <code key={t}>{t}</code>
-            ))}
-            {terms.text.length > 0 && (
-              <>
-                {' '}
-                · filtering{' '}
-                {terms.text.map((t) => (
-                  <code key={t}>{t}</code>
-                ))}
-              </>
+    <TimelineContext.Provider value={groups}>
+      <div className="app">
+        <header className="toolbar">
+          <div className="toolbar-row">
+            <div className="tab-info" title={tab?.url}>
+              <span className="tab-host">{hostOf(tab?.url) || 'No tab'}</span>
+              {pinned && <span className="pill">pinned to tab</span>}
+              {justUpdated && <span className="pill updated">updated</span>}
+            </div>
+            {!pinned && (
+              <button type="button" className="tool" onClick={popOut} title="Open this tab's timeline in its own window">
+                Pop out
+              </button>
             )}
-            <span className="hint-note">Quote a term to search it as text.</span>
-          </div>
-        )}
-        <div className="chips" role="group" aria-label="Show event types">
-          {CATEGORIES.map((c) => (
-            <button
-              type="button"
-              key={c.id}
-              className={`chip cat-${c.id}`}
-              aria-pressed={filters.has(c.id)}
-              onClick={() => toggleFilter(c.id)}
-            >
-              {c.label}
-              <span className="count">{counts.get(c.id) ?? 0}</span>
+            <button type="button" className="tool" onClick={clear} title="Clear captured events for this tab">
+              Clear
             </button>
-          ))}
-        </div>
-      </header>
-
-      <main className="list" ref={listRef} onScroll={onScroll}>
-        {!inspectable ? (
-          <div className="empty">Chrome doesn't let extensions inspect this page. Switch to a website tab.</div>
-        ) : !hasEvents ? (
-          <div className="empty">
-            <p>Nothing captured on this tab yet.</p>
-            <p>
-              <strong>Reload the page</strong> to capture its page-load hits.
-            </p>
           </div>
-        ) : null}
-        {inspectable &&
-          visible.map((g, i) => (
-            <PageSection
-              key={g.page.id}
-              group={g}
-              isLatest={i === visible.length - 1}
-              collapsed={collapsed.has(g.page.id)}
-              onTogglePage={togglePage}
-              expanded={expanded}
-              onToggleRow={toggleRow}
-              watchTerms={terms.watch}
-              watch={watch}
-            />
-          ))}
-      </main>
-    </div>
+          <input
+            className="search"
+            type="search"
+            placeholder="Search, or watch variables: eVar12, events, page_location"
+            value={query}
+            onChange={(e) => updateQuery(e.target.value)}
+          />
+          {terms.watch.length > 0 && (
+            <div className="watch-hint">
+              Watching{' '}
+              {terms.watch.map((t) => (
+                <code key={t}>{t}</code>
+              ))}
+              {terms.text.length > 0 && (
+                <>
+                  {' '}
+                  · filtering{' '}
+                  {terms.text.map((t) => (
+                    <code key={t}>{t}</code>
+                  ))}
+                </>
+              )}
+              <span className="hint-note">Quote a term to search it as text.</span>
+            </div>
+          )}
+          <div className="chips" role="group" aria-label="Show event types">
+            {CATEGORIES.filter((c) => counts.get(c.id)).map((c) => (
+              <button
+                type="button"
+                key={c.id}
+                className={`chip cat-${c.id}`}
+                aria-pressed={enabled.has(c.id)}
+                onClick={() => toggleCategory(c.id)}
+              >
+                {c.label}
+                <span className="count">{counts.get(c.id)}</span>
+              </button>
+            ))}
+          </div>
+        </header>
+
+        <main className="list" ref={listRef} onScroll={onScroll}>
+          {!inspectable ? (
+            <div className="empty">Chrome doesn't let extensions inspect this page. Switch to a website tab.</div>
+          ) : !hasEvents ? (
+            <div className="empty">
+              <p>Nothing captured on this tab yet.</p>
+              <p>
+                <strong>Reload the page</strong> to capture its page-load hits.
+              </p>
+            </div>
+          ) : null}
+          {inspectable &&
+            visible.map((g, i) => (
+              <PageSection
+                key={g.page.id}
+                group={g}
+                full={byPage.get(g.page.id) ?? g}
+                isLatest={i === visible.length - 1}
+                collapsed={collapsed.has(g.page.id)}
+                onTogglePage={togglePage}
+                expanded={expanded}
+                onToggleRow={toggleRow}
+                watchTerms={watchTerms}
+                watch={watch}
+                issues={issues}
+              />
+            ))}
+        </main>
+      </div>
+    </TimelineContext.Provider>
   );
 }

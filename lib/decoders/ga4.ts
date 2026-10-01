@@ -60,6 +60,9 @@ const ITEM_FIELDS: Record<string, string> = {
   cs: 'creative_slot',
 };
 
+/** Shown as an item's value when it has neither item_id nor item_name. */
+export const NO_ITEM_ID = '(no item_id or item_name)';
+
 const EVENT_META = new Set(['en', '_et', '_c', '_ee', '_s', '_dbg']);
 const PAGE = new Set(['dl', 'dr', 'dt']);
 const SESSION = new Set(['cid', 'uid', 'sid', 'sct', 'seg', '_fv', '_ss', '_nsi']);
@@ -97,6 +100,32 @@ function describeGcs(gcs: string): string | undefined {
   return `ad_storage ${state(m[1])}, analytics_storage ${state(m[2])}`;
 }
 
+const GCD_SIGNALS = ['ad_storage', 'analytics_storage', 'ad_user_data', 'ad_personalization'];
+
+/** Each gcd letter combines a signal's default with its update. */
+const GCD_LETTERS: Record<string, [state: string, how: string]> = {
+  l: ['not set', 'no default, no update'],
+  p: ['denied', 'denied by default, no update'],
+  q: ['denied', 'denied by default and by update'],
+  t: ['granted', 'granted by default, no update'],
+  r: ['granted', 'denied by default, granted by update'],
+  m: ['denied', 'no default, denied by update'],
+  n: ['granted', 'no default, granted by update'],
+  u: ['denied', 'granted by default, denied by update'],
+  v: ['granted', 'granted by default and by update'],
+};
+
+/** `13r3r3r2r5`: a leading digit, then a separator and a letter per signal (Consent Mode v2). */
+export function decodeGcd(gcd: string): ParamRow[] {
+  const m = gcd.match(/^\d\d([a-z])\d([a-z])\d([a-z])\d([a-z])/);
+  if (!m) return [];
+  return GCD_SIGNALS.map((signal, i) => {
+    const letter = m[i + 1]!;
+    const [state, how] = GCD_LETTERS[letter] ?? [letter, 'unknown code'];
+    return { key: `gcd.${signal}`, label: signal, value: state, note: how };
+  });
+}
+
 function decodeEvent(params: [string, string][], host: string): DecodedEvent {
   const get = (k: string) => params.find(([key]) => key === k)?.[1];
   const eventParams: ParamRow[] = [];
@@ -119,7 +148,7 @@ function decodeEvent(params: [string, string][], host: string): DecodedEvent {
       const fields = parseItem(value);
       const name = fields.find(([f]) => f === 'item_name')?.[1] ?? fields.find(([f]) => f === 'item_id')?.[1];
       const rest = fields.filter(([f]) => f !== 'item_name' || !name).map(([f, v]) => `${f}: ${v}`);
-      items.push({ key, label: `Item ${m[1]}`, value: name ?? value, note: rest.join(' · ') || undefined });
+      items.push({ key, label: `Item ${m[1]}`, value: name ?? NO_ITEM_ID, note: rest.join(' · ') || undefined });
     } else {
       const row: ParamRow = { key, label: LABELS[key], value };
       if (key === 'gcs') row.note = describeGcs(value);
@@ -127,7 +156,7 @@ function decodeEvent(params: [string, string][], host: string): DecodedEvent {
       else if (EVENT_META.has(key)) event.push(row);
       else if (PAGE.has(key)) page.push(row);
       else if (SESSION.has(key)) session.push(row);
-      else if (CONSENT.has(key)) consent.push(row);
+      else if (CONSENT.has(key)) consent.push(row, ...(key === 'gcd' ? decodeGcd(value) : []));
       else technical.push(row);
     }
   }

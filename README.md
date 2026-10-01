@@ -5,7 +5,7 @@
 A Chrome side panel that shows what each page load and interaction actually sends. It puts clicks, data layer pushes and analytics hits on one timeline, grouped by page, with the hits decoded into readable variables.
 
 ```
-▼ www.example.com/products/widget-a                     18:26:25 · 7 hits
+▼ www.example.com/products/widget-a                     18:26:25 · 7 events
    +0.00s  ACDL     { page }
    +0.01s  AA       s.t  pdp:widget-a        events=prodView · 14 eVars
    +0.01s  GA4      page_view  Widget A
@@ -44,6 +44,8 @@ Deploys come from three places:
 - **`npm run watch`** deploys on every save if you edit the code yourself.
 - **`npm run deploy`** deploys once.
 
+The installed copy is marked as a dev build so it can't be mistaken for a release: it's named **Analytics Debugger Dev** (in the side panel header, `chrome://extensions` and the toolbar tooltip) and has an inverted, orange icon. Release zips keep the normal name and icon.
+
 A deploy only installs if the typecheck and unit tests pass, so a half-finished change never reaches your browser. Keep Developer mode on: Chrome disables an unpacked extension that reloads itself without it.
 
 ### Publishing a release
@@ -62,7 +64,8 @@ The release workflow checks the tag matches `package.json`, runs the checks, and
 - Hits are captured even while the panel is closed, so you can open it after the fact. The log survives navigation and is cleared when the browser closes or the tab is closed.
 - Click a row to expand it. Hits show their variables grouped and labeled (`v12` shows as **eVar12**, `D=` references are resolved). Use **Raw** for the original URL and body.
 - **Copy as Markdown** on a hit, or **Copy** on a page header, gives you tables ready for a ticket or client deliverable.
-- The search box matches variable names and values, so typing `scAdd` or `purchase` finds the hits that carry it.
+- The search box filters by text, so typing `scAdd` or `purchase` finds the events that contain it. Separate terms with commas to match any of them.
+- **Watch variables** by typing their names in the search box, comma separated: `eVar12, events, page_location`. Only hits and data layer pushes that carry them stay, each showing just those values, with clicks kept in between for context. A value that differs from the previous hit of the same type is highlighted, so you can see which interaction changed it. Names match the wire key or the friendly name in any spelling (`eVar12` or `v12`, `pageName` or `page name`, `page_location` or `dl`), dotted paths match nested keys (`product.sku`, `webPageDetails.name`), and Adobe `D=` references show the value they resolve to. Mix in a filter term to narrow it down: `page_view, page_location`. Quote a term (`"events"`) to search it as text instead. While watching, a page's **Copy** button copies a table of the watched values.
 - The toolbar badge shows how many hits the current page has sent.
 - A red label on a row means the hit failed. "Blocked by an extension" means an ad blocker stopped it.
 
@@ -82,6 +85,8 @@ npm test             # decoder, timeline and data layer hook unit tests
 npm run test:e2e     # loads the extension in Chromium, drives a fixture store page, and exercises live updates
 npm run typecheck
 ```
+
+Icons are rendered from SVG by `node scripts/render-icons.mjs` (release icons into `public/icon/`, dev-build icons into `scripts/dev-icon/`).
 
 The end-to-end test needs Playwright's Chromium once: `npx playwright install chromium`. Its screenshots of the panel land in `test-results/`.
 

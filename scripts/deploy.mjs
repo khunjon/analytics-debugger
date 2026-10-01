@@ -16,13 +16,28 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const BUILD = path.join(ROOT, '.output/chrome-mv3');
-const LIVE = path.join(ROOT, 'dist/chrome');
+// DEPLOY_DIR redirects a deploy, e.g. to try one out in a throwaway folder.
+const LIVE = process.env.DEPLOY_DIR ? path.resolve(process.env.DEPLOY_DIR) : path.join(ROOT, 'dist/chrome');
 const BUILD_INFO = 'build.json';
-const SOURCES = ['entrypoints', 'lib', 'public', 'wxt.config.ts', 'tsconfig.json', 'package-lock.json'];
+const DEV_ICONS = path.join(ROOT, 'scripts/dev-icon');
+const SOURCES = [
+  'entrypoints',
+  'lib',
+  'public',
+  'wxt.config.ts',
+  'tsconfig.json',
+  'package-lock.json',
+  'scripts/deploy.mjs',
+  'scripts/dev-icon',
+];
 
 /** Files that only take effect after a full extension reload. Everything else belongs to the side panel. */
 const isCore = (file) =>
-  file === 'manifest.json' || file === 'background.js' || file.startsWith('content-scripts/') || file.startsWith('icon/');
+  file === 'manifest.json' ||
+  file === 'background.js' ||
+  file.startsWith('content-scripts/') ||
+  file.startsWith('icon/') ||
+  file.startsWith('icon-dev/');
 
 const flags = new Set(process.argv.slice(2));
 const quiet = flags.has('--quiet');
@@ -46,6 +61,37 @@ function hashFiles(base, files) {
   const hash = createHash('sha256');
   for (const file of files) hash.update(`${file}\0`).update(fs.readFileSync(path.join(base, file))).update('\0');
   return hash.digest('hex').slice(0, 16);
+}
+
+function hashContents(entries) {
+  const hash = createHash('sha256');
+  for (const [file, content] of entries) hash.update(`${file}\0`).update(content).update('\0');
+  return hash.digest('hex').slice(0, 16);
+}
+
+/**
+ * The installed copy is marked as a dev build so it can't be mistaken for a release: "Dev" after its
+ * name (shown in the side panel header and the toolbar tooltip) and the inverted icon from
+ * scripts/dev-icon. Release zips are untouched.
+ */
+function devManifest(content) {
+  const manifest = JSON.parse(content.toString('utf8'));
+  manifest.name = `${manifest.name} Dev`;
+  manifest.icons = Object.fromEntries(Object.keys(manifest.icons ?? {}).map((size) => [size, `icon-dev/${size}.png`]));
+  manifest.action = {
+    ...manifest.action,
+    default_icon: manifest.icons,
+    default_title: `${manifest.action?.default_title ?? manifest.name} Dev`,
+  };
+  return Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+/** The built extension plus the dev-build changes, as relative path -> contents, sorted by path. */
+function installFiles() {
+  const files = new Map(walk(BUILD).map((file) => [file, fs.readFileSync(path.join(BUILD, file))]));
+  files.set('manifest.json', devManifest(files.get('manifest.json')));
+  for (const file of walk(DEV_ICONS)) files.set(`icon-dev/${file}`, fs.readFileSync(path.join(DEV_ICONS, file)));
+  return new Map([...files].sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function sourceHash() {
@@ -126,21 +172,20 @@ function deploy({ force }) {
     }
   }
 
-  const files = walk(BUILD);
-  const core = hashFiles(BUILD, files.filter(isCore));
-  const panel = hashFiles(BUILD, files.filter((f) => !isCore(f)));
+  const files = installFiles();
+  const core = hashContents([...files].filter(([f]) => isCore(f)));
+  const panel = hashContents([...files].filter(([f]) => !isCore(f)));
   const firstInstall = !fs.existsSync(path.join(LIVE, 'manifest.json'));
 
-  // Copy changed files, remove stale ones, then write build.json last so the running extension
+  // Write changed files, remove stale ones, then write build.json last so the running extension
   // reacts only once everything is in place.
-  for (const file of files) {
-    const from = path.join(BUILD, file);
+  for (const [file, content] of files) {
     const to = path.join(LIVE, file);
-    if (fs.existsSync(to) && fs.readFileSync(to).equals(fs.readFileSync(from))) continue;
+    if (fs.existsSync(to) && fs.readFileSync(to).equals(content)) continue;
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(from, to);
+    fs.writeFileSync(to, content);
   }
-  const keep = new Set([...files, BUILD_INFO]);
+  const keep = new Set([...files.keys(), BUILD_INFO]);
   for (const file of walk(LIVE)) if (!keep.has(file)) fs.rmSync(path.join(LIVE, file));
   removeEmptyDirs(LIVE);
   fs.writeFileSync(path.join(LIVE, BUILD_INFO), `${JSON.stringify({ source, core, panel, builtAt: Date.now() }, null, 2)}\n`);

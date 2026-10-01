@@ -1,6 +1,7 @@
 import { decoderFor, type DecodedEvent } from './decoders';
 import type { HitEvent } from './types';
 import { badgeFor, clockTime, dataLayerTitle, hitStatus, relativeTime, type PageGroup, type Row } from './view';
+import type { WatchCell } from './watch';
 
 const cell = (s: string | undefined) => (s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 
@@ -41,6 +42,26 @@ function rowDetail(row: Row): string {
   if (row.type === 'hit') return row.decoded.summary.join(' · ');
   if (row.type === 'interaction') return row.event.href ?? '';
   return '';
+}
+
+/** While watching variables: one row per event, one column per watched variable. */
+export function pageToWatchMarkdown(group: PageGroup, terms: string[], watch: Map<string, WatchCell[]>): string {
+  const { page, rows } = group;
+  const valueOf = (row: Row, term: string) => {
+    const matches = watch.get(row.key)?.find((c) => c.term === term)?.matches ?? [];
+    return matches.map((m) => m.value).join(' | ');
+  };
+  return [
+    `### ${page.url || '(page loaded before capture started)'}`,
+    '',
+    `| Time | Source | Event | ${terms.map(cell).join(' | ')} |`,
+    `|---|---|---|${terms.map(() => '---').join('|')}|`,
+    ...rows.map(
+      (r) =>
+        `| ${relativeTime(r.ts, page.ts)} | ${badgeFor(r)} | ${cell(rowTitle(r))} | ${terms.map((t) => cell(valueOf(r, t))).join(' | ')} |`,
+    ),
+    '',
+  ].join('\n');
 }
 
 export function pageToMarkdown(group: PageGroup): string {

@@ -107,10 +107,26 @@ test('side panel renders the decoded timeline', async () => {
   await panel.getByRole('button', { name: /^Data layer/ }).click();
   await expect(panel.locator('.row .badge', { hasText: 'ACDL' })).toHaveCount(0);
   await panel.getByRole('button', { name: /^Data layer/ }).click();
-  await panel.getByPlaceholder('Search events, variables, values…').fill('scAdd');
+  const search = panel.locator('input.search');
+  await search.fill('scAdd');
   await expect(panel.locator('.row')).toHaveCount(1);
 
+  // Watching variables: only hits that carry them, with their values inline; clicks stay for context.
+  await search.fill('events, eVar1');
+  await expect(panel.locator('.watch-hint code')).toHaveText(['events', 'eVar1']);
+  await expect(panel.locator('.watch-item', { hasText: 'prodView' })).toBeVisible();
+  await expect(panel.locator('.watch-item.changed', { hasText: 'scAdd' })).toBeVisible();
+  await expect(panel.locator('.watch-item', { hasText: 'pdp:widget-a (D=pageName)' })).toBeVisible();
+  await expect(panel.locator('.row .title', { hasText: '"Add to cart"' })).toBeVisible();
+  await expect(panel.locator('.row .badge', { hasText: 'GA4' })).toHaveCount(0);
+  await panel.screenshot({ path: path.join(SHOTS, 'panel-watch.png') });
+
+  // An event filter plus a watch.
+  await search.fill('page_view, page_location');
+  await expect(panel.locator('.row')).toHaveCount(1);
+  await expect(panel.locator('.row .watch-key')).toHaveText('page_location');
+
   await panel.emulateMedia({ colorScheme: 'dark' });
-  await panel.getByPlaceholder('Search events, variables, values…').fill('');
+  await search.fill('');
   await panel.screenshot({ path: path.join(SHOTS, 'panel-dark.png') });
 });

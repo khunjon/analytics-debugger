@@ -1,5 +1,6 @@
 import { decodeRequest, decoderFor, type DecodedEvent, type VendorId } from './decoders';
 import type { DataLayerEvent, HitEvent, InteractionEvent, NavEvent, PageRecord, TabTimeline } from './types';
+import { paramsOf, parseTerms, watchCells, watchSource, type Param, type QueryTerms, type WatchCell } from './watch';
 
 export type Category = VendorId | 'datalayer' | 'interaction' | 'nav';
 
@@ -136,15 +137,44 @@ export function searchText(row: Row): string {
   return text;
 }
 
-export function filterGroups(groups: PageGroup[], enabled: Set<Category>, query: string): PageGroup[] {
-  const q = query.trim().toLowerCase();
+export const rowParams = (row: Row): Param[] => paramsOf(row, (r) => parsePayload(r.event));
+
+export interface FilterResult {
+  groups: PageGroup[];
+  terms: QueryTerms;
+  /** Watched values per row key, for hits and data layer pushes that carry a watched variable. */
+  watch: Map<string, WatchCell[]>;
+}
+
+/**
+ * Apply the type chips and the search bar. Text terms keep rows that match any of them. Watch terms
+ * keep hits and data layer pushes that carry at least one watched variable, while clicks and
+ * navigation stay as context unless text terms are also given.
+ */
+export function filterGroups(groups: PageGroup[], enabled: Set<Category>, query: string): FilterResult {
+  const terms = parseTerms(query, groups, rowParams);
+  const watch = new Map<string, WatchCell[]>();
+  const lastValues = new Map<string, string>();
   const latest = groups[groups.length - 1];
-  return groups
-    .map((g) => ({
-      page: g.page,
-      rows: g.rows.filter((r) => enabled.has(rowCategory(r)) && (!q || searchText(r).includes(q))),
-    }))
-    .filter((g) => g.rows.length > 0 || g.page === latest?.page);
+
+  const keep = (r: Row): boolean => {
+    if (!enabled.has(rowCategory(r))) return false;
+    if (terms.text.length && !terms.text.some((t) => searchText(r).includes(t))) return false;
+    if (!terms.watch.length) return true;
+    if (r.type !== 'hit' && r.type !== 'datalayer') return terms.text.length === 0;
+    const cells = watchCells(rowParams(r), terms.watch, watchSource(r), lastValues);
+    if (!cells.some((c) => c.matches.length)) return false;
+    watch.set(r.key, cells);
+    return true;
+  };
+
+  return {
+    groups: groups
+      .map((g) => ({ page: g.page, rows: g.rows.filter(keep) }))
+      .filter((g) => g.rows.length > 0 || g.page === latest?.page),
+    terms,
+    watch,
+  };
 }
 
 export function relativeTime(ts: number, pageTs: number): string {

@@ -6,6 +6,7 @@ import { buildGroups, CATEGORIES, filterGroups, rowCategory, type Category } fro
 import { PageSection } from './PageSection';
 
 const FILTERS_KEY = 'adbg.filters';
+const QUERY_KEY = 'adbg.query';
 
 function loadFilters(): Set<Category> {
   try {
@@ -145,12 +146,27 @@ export function App() {
   const timeline = useTimeline(tabId);
   const justUpdated = useLiveUpdates();
   const [filters, setFilters] = useState(loadFilters);
-  const [query, setQuery] = useState('');
+  // Kept for the panel's lifetime, including in-place refreshes after an update.
+  const [query, setQuery] = useState(() => {
+    try {
+      return sessionStorage.getItem(QUERY_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  const updateQuery = (value: string) => {
+    setQuery(value);
+    try {
+      sessionStorage.setItem(QUERY_KEY, value);
+    } catch {
+      /* storage unavailable */
+    }
+  };
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
   const groups = useMemo(() => (timeline ? buildGroups(timeline) : []), [timeline]);
-  const visible = useMemo(() => filterGroups(groups, filters, query), [groups, filters, query]);
+  const { groups: visible, terms, watch } = useMemo(() => filterGroups(groups, filters, query), [groups, filters, query]);
   const counts = useMemo(() => {
     const c = new Map<Category, number>();
     for (const g of groups) for (const r of g.rows) c.set(rowCategory(r), (c.get(rowCategory(r)) ?? 0) + 1);
@@ -244,10 +260,28 @@ export function App() {
         <input
           className="search"
           type="search"
-          placeholder="Search events, variables, values…"
+          placeholder="Search, or watch variables: eVar12, events, page_location"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => updateQuery(e.target.value)}
         />
+        {terms.watch.length > 0 && (
+          <div className="watch-hint">
+            Watching{' '}
+            {terms.watch.map((t) => (
+              <code key={t}>{t}</code>
+            ))}
+            {terms.text.length > 0 && (
+              <>
+                {' '}
+                · filtering{' '}
+                {terms.text.map((t) => (
+                  <code key={t}>{t}</code>
+                ))}
+              </>
+            )}
+            <span className="hint-note">Quote a term to search it as text.</span>
+          </div>
+        )}
         <div className="chips" role="group" aria-label="Show event types">
           {CATEGORIES.map((c) => (
             <button
@@ -271,8 +305,7 @@ export function App() {
           <div className="empty">
             <p>Nothing captured on this tab yet.</p>
             <p>
-              <strong>Reload the page</strong> to capture its page-load hits. Clicks and data layer pushes are
-              picked up on pages loaded after the extension was installed or updated.
+              <strong>Reload the page</strong> to capture its page-load hits.
             </p>
           </div>
         ) : null}
@@ -286,6 +319,8 @@ export function App() {
               onTogglePage={togglePage}
               expanded={expanded}
               onToggleRow={toggleRow}
+              watchTerms={terms.watch}
+              watch={watch}
             />
           ))}
       </main>

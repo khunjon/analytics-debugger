@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { decoderFor, type DecodedEvent } from '@/lib/decoders';
-import { decodedToMarkdown, pageToMarkdown } from '@/lib/markdown';
+import { decodedToMarkdown, pageToMarkdown, pageToWatchMarkdown } from '@/lib/markdown';
 import type { DataLayerEvent, HitEvent, InteractionEvent } from '@/lib/types';
 import {
   badgeFor,
@@ -13,6 +13,7 @@ import {
   type PageGroup,
   type Row,
 } from '@/lib/view';
+import { paramMatches, type WatchCell } from '@/lib/watch';
 
 function useCopy() {
   const [copied, setCopied] = useState<string | null>(null);
@@ -58,12 +59,24 @@ interface PageSectionProps {
   onTogglePage: (id: string) => void;
   expanded: Set<string>;
   onToggleRow: (key: string) => void;
+  watchTerms: string[];
+  watch: Map<string, WatchCell[]>;
 }
 
-export function PageSection({ group, isLatest, collapsed, onTogglePage, expanded, onToggleRow }: PageSectionProps) {
+export function PageSection({
+  group,
+  isLatest,
+  collapsed,
+  onTogglePage,
+  expanded,
+  onToggleRow,
+  watchTerms,
+  watch,
+}: PageSectionProps) {
   const { page, rows } = group;
   const { copied, copy } = useCopy();
-  const hits = rows.filter((r) => r.type === 'hit').length;
+  // Analytics events (AA, Web SDK, GA4); data layer pushes, clicks and navigation aren't counted.
+  const events = rows.filter((r) => r.type === 'hit').length;
   return (
     <section className={`page${isLatest ? ' latest' : ''}`}>
       <div className="page-header">
@@ -80,9 +93,16 @@ export function PageSection({ group, isLatest, collapsed, onTogglePage, expanded
           <span className="page-url">{displayUrl(page.url)}</span>
         </button>
         <span className="page-meta" title={new Date(page.ts).toLocaleString()}>
-          {clockTime(page.ts).slice(0, 8)} · {hits} hit{hits === 1 ? '' : 's'}
+          {clockTime(page.ts).slice(0, 8)} · {events} event{events === 1 ? '' : 's'}
         </span>
-        <button type="button" className="link" onClick={() => copy(pageToMarkdown(group), page.id)}>
+        <button
+          type="button"
+          className="link"
+          title={watchTerms.length ? 'Copy the watched values as a Markdown table' : 'Copy this page as Markdown'}
+          onClick={() =>
+            copy(watchTerms.length ? pageToWatchMarkdown(group, watchTerms, watch) : pageToMarkdown(group), page.id)
+          }
+        >
           {copied === page.id ? 'Copied' : 'Copy'}
         </button>
       </div>
@@ -95,6 +115,8 @@ export function PageSection({ group, isLatest, collapsed, onTogglePage, expanded
               pageTs={page.ts}
               expanded={expanded.has(row.key)}
               onToggle={onToggleRow}
+              cells={watch.get(row.key)}
+              watchTerms={watchTerms}
             />
           ))
         ) : (
@@ -138,9 +160,33 @@ interface EventRowProps {
   pageTs: number;
   expanded: boolean;
   onToggle: (key: string) => void;
+  /** Watched values for this row; replaces the summary line when present. */
+  cells?: WatchCell[];
+  watchTerms: string[];
 }
 
-const EventRow = memo(function EventRow({ row, pageTs, expanded, onToggle }: EventRowProps) {
+function WatchValues({ cells }: { cells: WatchCell[] }) {
+  return (
+    <span className="watch">
+      {cells.flatMap((c) => {
+        const cls = `watch-item${c.changed ? ' changed' : ''}${c.matches.length ? '' : ' missing'}`;
+        // A dotted term can match several nested keys; label each by its own key then.
+        const items =
+          c.matches.length > 1 ? c.matches.map((m) => ({ label: m.key, value: m.value })) : [{ label: c.term, value: c.matches[0]?.value }];
+        return items.map((item, i) => (
+          <span key={`${c.term}:${i}`} className={cls}>
+            <span className="watch-key">{item.label}</span>
+            <span className="watch-value" title={c.changed ? 'Changed since the previous hit of this type' : undefined}>
+              {item.value === undefined ? '—' : item.value === '' ? '(empty)' : item.value}
+            </span>
+          </span>
+        ));
+      })}
+    </span>
+  );
+}
+
+const EventRow = memo(function EventRow({ row, pageTs, expanded, onToggle, cells, watchTerms }: EventRowProps) {
   const { title, detail, summary } = rowText(row);
   const status = row.type === 'hit' ? hitStatus(row.event) : undefined;
   const late = row.type === 'datalayer' && row.event.late;
@@ -157,13 +203,13 @@ const EventRow = memo(function EventRow({ row, pageTs, expanded, onToggle }: Eve
             {title}
             {detail && <span className="detail"> {detail}</span>}
           </span>
-          {summary && <span className="summary">{summary}</span>}
+          {cells ? <WatchValues cells={cells} /> : summary && <span className="summary">{summary}</span>}
           {status?.tone === 'error' && <span className="status-error">{status.label}</span>}
         </span>
       </button>
       {expanded && (
         <div className="row-body">
-          {row.type === 'hit' && <HitDetail hit={row.event} decoded={row.decoded} />}
+          {row.type === 'hit' && <HitDetail hit={row.event} decoded={row.decoded} watchTerms={watchTerms} />}
           {row.type === 'datalayer' && <DataLayerDetail event={row.event} />}
           {row.type === 'interaction' && <InteractionDetail event={row.event} />}
           {row.type === 'nav' && <div className="mono wrap">{row.event.url}</div>}
@@ -185,7 +231,8 @@ function prettyBody(body: string): string {
   }
 }
 
-function HitDetail({ hit, decoded }: { hit: HitEvent; decoded: DecodedEvent }) {
+function HitDetail({ hit, decoded, watchTerms }: { hit: HitEvent; decoded: DecodedEvent; watchTerms: string[] }) {
+  const watched = (r: { key: string; label?: string; value: string }) => watchTerms.some((t) => paramMatches(r, t));
   const [raw, setRaw] = useState(false);
   const { copied, copy } = useCopy();
   const status = hitStatus(hit);
@@ -222,14 +269,18 @@ function HitDetail({ hit, decoded }: { hit: HitEvent; decoded: DecodedEvent }) {
         </>
       ) : (
         decoded.groups.map((g) => (
-          <details key={g.title} className="param-group" open={!COLLAPSED_GROUPS.has(g.title)}>
+          <details
+            key={g.title}
+            className="param-group"
+            open={!COLLAPSED_GROUPS.has(g.title) || g.rows.some(watched)}
+          >
             <summary>
               {g.title} <span className="count">{g.rows.length}</span>
             </summary>
             <table className="params">
               <tbody>
                 {g.rows.map((r, i) => (
-                  <tr key={`${r.key}:${i}`}>
+                  <tr key={`${r.key}:${i}`} className={watched(r) ? 'watched' : undefined}>
                     <th>
                       <span className="label">{r.label ?? r.key}</span>
                       {r.label && r.label !== r.key && <span className="key">{r.key}</span>}

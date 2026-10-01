@@ -10,6 +10,8 @@ The user runs the extension from `dist/chrome`, loaded unpacked. A Stop hook (`.
 - `npm test`, `npm run typecheck`
 - `npm run test:e2e` for anything touching capture, storage, the background worker, content scripts, or the update path. It also writes panel screenshots to `test-results/`; look at them after UI changes.
 
+Deploy marks the installed copy as a dev build (named "Analytics Debugger Dev", icons from `scripts/dev-icon/`) by rewriting its manifest; release builds are untouched. Anything that changes the manifest could leave the user's extension disabled if Chrome rejects it, so try such changes first with `DEPLOY_DIR=<temp dir> node scripts/deploy.mjs --force` and load that folder in Playwright.
+
 Changes to `background.js`, content scripts or the manifest reload the whole extension, which closes the user's side panel. Everything else is a panel-only update that refreshes in place, so prefer keeping logic in the panel. URL matching is in `lib/decoders/match.ts` for that reason: the background bundles only that file, not the decoders.
 
 ## Public repo

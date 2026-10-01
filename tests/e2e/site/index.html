@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Widget A | Fixture Store</title>
+    <script>
+      // A data layer that exists before the tag manager loads, the way most sites start.
+      window.dataLayer = window.dataLayer || [];
+      dataLayer.push({ pageType: 'pdp', productId: 'SKU123' });
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag('js', new Date());
+      gtag('config', 'G-TEST123');
+
+      // Stand-in for GTM: replaces push and calls through to the previous one.
+      (function () {
+        var previous = dataLayer.push;
+        dataLayer.push = function () {
+          return previous.apply(dataLayer, arguments);
+        };
+      })();
+
+      window.adobeDataLayer = window.adobeDataLayer || [];
+      adobeDataLayer.push({ page: { name: 'pdp:widget-a', type: 'product' } });
+    </script>
+  </head>
+  <body>
+    <h1>Widget A</h1>
+    <button id="atc" class="btn btn-atc" data-track="add-to-cart">Add to cart</button>
+    <button id="spa" class="btn">Go to cart (SPA route)</button>
+    <a id="next" href="/page2.html">Next page</a>
+
+    <script>
+      var origin = location.origin;
+
+      // Page-load hits: AppMeasurement image request, GA4 beacon, Web SDK fetch.
+      new Image().src =
+        origin +
+        '/b/ss/fixtureprod/1/JS-2.27.0/s111?AQB=1&pageName=pdp%3Awidget-a&events=prodView' +
+        '&products=%3BSKU123&v1=D%3DpageName&c5=pdp&c.&a.&activitymap.&page=pdp&.activitymap&.a&.c&AQE=1';
+      navigator.sendBeacon(
+        origin + '/g/collect?v=2&tid=G-TEST123&cid=1.2&en=page_view&dt=Widget%20A&dl=' + encodeURIComponent(location.href),
+      );
+      fetch(origin + '/ee/v1/interact?configId=fixture-ds', {
+        method: 'POST',
+        body: JSON.stringify({
+          events: [
+            {
+              xdm: { eventType: 'web.webpagedetails.pageViews', web: { webPageDetails: { name: 'pdp:widget-a' } } },
+              data: { __adobe: { analytics: { pageName: 'pdp:widget-a', eVar3: 'pdp' } } },
+            },
+          ],
+        }),
+      });
+
+      // Adobe Tags direct call rule firing a little after load.
+      window._satellite = { track: function () {} };
+      setTimeout(function () {
+        _satellite.track('pdp-loaded', { sku: 'SKU123' });
+      }, 300);
+
+      document.getElementById('atc').addEventListener('click', function () {
+        adobeDataLayer.push({ event: 'cart.add', product: { sku: 'SKU123' } });
+        navigator.sendBeacon(
+          origin + '/b/ss/fixtureprod/1/JS-2.27.0/s222',
+          'AQB=1&pe=lnk_o&pev2=add%20to%20cart&events=scAdd&products=%3BSKU123%3B1%3B19.99&AQE=1',
+        );
+        fetch(origin + '/g/collect?v=2&tid=G-TEST123&cid=1.2', {
+          method: 'POST',
+          keepalive: true,
+          body: 'en=add_to_cart&ep.method=button&pr1=idSKU123~nmWidget%20A~qt1\r\nen=view_cart',
+        });
+      });
+
+      document.getElementById('spa').addEventListener('click', function () {
+        history.pushState({}, '', '/cart');
+      });
+
+      // Unload beacon: should stay with this page even though it arrives during the next navigation.
+      addEventListener('pagehide', function () {
+        navigator.sendBeacon(origin + '/g/collect?v=2&tid=G-TEST123&cid=1.2&en=user_engagement&_et=1234');
+      });
+    </script>
+  </body>
+</html>

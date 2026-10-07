@@ -144,6 +144,9 @@ export function installHooks(win: any, emit: (e: PageEvent) => void, opts: HookO
    * before the library's first rules ("Library Loaded") run. The library starts with
    * `window._satellite = window._satellite || {}`: catch that assignment, add the monitor, and turn
    * `_satellite` back into a plain property. `window._satellite` stays undefined until then.
+   *
+   * Until then the trap is visible in one way: `'_satellite' in window` is true. It's left out of
+   * Object.keys(window), and once assigned the property is exactly what the library's own assignment makes.
    */
   function trapSatellite() {
     if (Object.getOwnPropertyDescriptor(win, '_satellite')) return;
@@ -151,7 +154,7 @@ export function installHooks(win: any, emit: (e: PageEvent) => void, opts: HookO
     try {
       Object.defineProperty(win, '_satellite', {
         configurable: true,
-        enumerable: true,
+        enumerable: false,
         get: () => value,
         set(v: unknown) {
           value = v;
@@ -253,6 +256,9 @@ export function installHooks(win: any, emit: (e: PageEvent) => void, opts: HookO
   function snapshot() {
     const ts = now();
     if (ts - lastSnapshot < SNAPSHOT_EVERY) return;
+    // Nobody is looking at a background tab. Rules still snapshot digitalData when they fire, and the
+    // first tick after the tab comes back catches up on the rest.
+    if (dom && win.document.hidden) return;
     lastSnapshot = ts;
     guard(() => snapshotDigitalData(ts));
     guard(() => emitEnv('adobe-tags', tagsInfo(), ts));

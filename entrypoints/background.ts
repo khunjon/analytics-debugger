@@ -19,6 +19,7 @@ import {
   trim,
 } from '@/lib/timeline';
 import { HANDOFF_KEY, LOADED_CORE_KEY, readBuild } from '@/lib/live-update';
+import { sanitizePageEvent } from '@/lib/page-event';
 import {
   chunkKey,
   tabKey,
@@ -30,7 +31,12 @@ import {
 } from '@/lib/types';
 
 const MAX_BODY = 200_000;
-const ALL_URLS = { urls: ['<all_urls>'] };
+// Every request type that can carry an analytics hit (beacons are 'ping', Floodlight iframes are
+// 'sub_frame'). Leaving out pages, stylesheets, fonts and media spares the worker most other requests.
+const HIT_REQUESTS: Browser.webRequest.RequestFilter = {
+  urls: ['<all_urls>'],
+  types: ['sub_frame', 'script', 'image', 'xmlhttprequest', 'ping', 'object', 'other'],
+};
 
 function readBody(body: Browser.webRequest.OnBeforeRequestDetails['requestBody']): string | undefined {
   if (!body) return undefined;
@@ -341,7 +347,7 @@ export default defineBackground(() => {
       });
       return undefined;
     },
-    ALL_URLS,
+    HIT_REQUESTS,
     ['requestBody'],
   );
 
@@ -358,8 +364,8 @@ export default defineBackground(() => {
       touch(hit);
     });
   };
-  browser.webRequest.onCompleted.addListener((d) => recordOutcome(d), ALL_URLS);
-  browser.webRequest.onErrorOccurred.addListener((d) => recordOutcome(d), ALL_URLS);
+  browser.webRequest.onCompleted.addListener((d) => recordOutcome(d), HIT_REQUESTS);
+  browser.webRequest.onErrorOccurred.addListener((d) => recordOutcome(d), HIT_REQUESTS);
 
   // ---- Navigation ----
 
@@ -384,23 +390,30 @@ export default defineBackground(() => {
 
   // ---- Page events (data layer, clicks, Tags rules, environment) and panel requests ----
 
+  const EXTENSION_ORIGIN = browser.runtime.getURL('/');
+
   browser.runtime.onMessage.addListener((raw, sender, sendResponse) => {
+    if (sender.id !== browser.runtime.id) return undefined;
     const msg = raw as RuntimeMessage;
     if (msg?.type === 'adbg:page-event') {
       const tabId = sender.tab?.id;
-      if (tabId == null) return undefined;
+      // The relay passes on whatever the page dispatched; keep only what a real page event can hold.
+      const event = sanitizePageEvent(msg.event);
+      if (tabId == null || !event) return undefined;
       void update(tabId, (t, touch) => {
         const page = resolvePage(t, {
           documentId: sender.documentId,
           frameId: sender.frameId,
-          ts: msg.event.ts,
+          ts: event.ts,
           url: sender.url,
         });
         if (!page.committed && sender.frameId === 0 && sender.url) page.url = sender.url;
-        add(t, touch, { ...msg.event, id: newId(), pageId: page.id, frameId: sender.frameId } as TimelineEvent);
+        add(t, touch, { ...event, id: newId(), pageId: page.id, frameId: sender.frameId } as TimelineEvent);
       });
       return undefined;
     }
+    // The rest come from the side panel (or its popped-out window), never from content scripts.
+    if (!sender.url?.startsWith(EXTENSION_ORIGIN)) return undefined;
     if (msg?.type === 'adbg:check-build') {
       void checkBuild();
       return undefined;

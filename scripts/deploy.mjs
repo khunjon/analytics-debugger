@@ -77,6 +77,9 @@ function hashContents(entries) {
 function devManifest(content) {
   const manifest = JSON.parse(content.toString('utf8'));
   manifest.name = `${manifest.name} Dev`;
+  // Live updates hand the timelines to the next instance through storage.local (reloadKeepingTimelines
+  // in background.ts), which can exceed its 10 MB quota. Release builds never reload themselves.
+  manifest.permissions = [...new Set([...(manifest.permissions ?? []), 'unlimitedStorage'])];
   manifest.icons = Object.fromEntries(Object.keys(manifest.icons ?? {}).map((size) => [size, `icon-dev/${size}.png`]));
   manifest.action = {
     ...manifest.action,
@@ -151,7 +154,31 @@ One-time setup in Chrome:
 After that, every deploy installs itself.`);
 }
 
+/**
+ * A deploy deletes every file in the target that isn't part of the build, so only deploy into an
+ * empty folder or one a previous deploy wrote (it has build.json). DEPLOY_DIR=. would otherwise wipe the repo.
+ */
+function checkTarget() {
+  const inside = (dir, parent) => {
+    const rel = path.relative(parent, dir);
+    return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  };
+  if (inside(ROOT, LIVE)) return `${LIVE} contains the project itself.`;
+  if (!fs.existsSync(LIVE)) return null;
+  if (!fs.statSync(LIVE).isDirectory()) return `${LIVE} is not a folder.`;
+  const entries = fs.readdirSync(LIVE).filter((name) => name !== '.DS_Store');
+  if (entries.length && !fs.existsSync(path.join(LIVE, BUILD_INFO))) {
+    return `${LIVE} is not empty and was not written by a deploy (no ${BUILD_INFO}).`;
+  }
+  return null;
+}
+
 function deploy({ force }) {
+  const problem = checkTarget();
+  if (problem) {
+    console.error(`✗ Refusing to deploy: ${problem} Choose an empty folder.`);
+    return false;
+  }
   const source = sourceHash();
   const installed = readInstalled();
   if (!force && installed?.source === source) {

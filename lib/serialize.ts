@@ -37,7 +37,10 @@ export function serialize(value: unknown, depth = 0, seen = new WeakSet<object>(
   try {
     const tag = Object.prototype.toString.call(obj);
     if (Array.isArray(obj) || tag === '[object Arguments]') {
-      return Array.from(obj as ArrayLike<unknown>, (v) => serialize(v, depth + 1, seen));
+      const list = obj as ArrayLike<unknown>;
+      const out = Array.from({ length: Math.min(list.length, MAX_KEYS) }, (_, i) => serialize(list[i], depth + 1, seen));
+      if (list.length > MAX_KEYS) out.push(`[${list.length - MAX_KEYS} more items]`);
+      return out;
     }
     if (obj instanceof Map) {
       return Object.fromEntries([...obj].slice(0, MAX_KEYS).map(([k, v]) => [String(k), serialize(v, depth + 1, seen)]));

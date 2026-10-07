@@ -20,8 +20,21 @@ function clean(s: string | null | undefined, max = 120): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
+/**
+ * The start of an element's text, reading no more nodes than it needs. For clicks outside any control,
+ * where the element can be a large container: innerText would lay out and copy all of it.
+ */
+function leadingText(el: Element, max = 120): string {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => (n.parentElement?.closest('script,style,noscript,template') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  let out = '';
+  while (out.length <= max && walker.nextNode()) out += ` ${walker.currentNode.nodeValue ?? ''}`;
+  return out;
+}
+
 /** Visible label for an element. Never reads what a user typed into a text field. */
-function textOf(el: Element): string {
+function textOf(el: Element, control = true): string {
   const aria = el.getAttribute('aria-label');
   if (aria) return clean(aria);
   if (el instanceof HTMLInputElement) {
@@ -34,7 +47,7 @@ function textOf(el: Element): string {
   if (el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement) {
     return clean(el.labels?.[0]?.innerText || el.name || el.id);
   }
-  const text = el instanceof HTMLElement ? el.innerText : el.textContent;
+  const text = !control ? leadingText(el) : el instanceof HTMLElement ? el.innerText : el.textContent;
   if (clean(text)) return clean(text);
   const img = el.querySelector('img[alt]');
   return clean(img?.getAttribute('alt') || el.getAttribute('title'));
@@ -81,10 +94,11 @@ export interface ElementDescription {
 export function describeTarget(target: EventTarget | null): ElementDescription | undefined {
   const start = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
   if (!start) return undefined;
-  const el = start.closest(INTERACTIVE) ?? start;
+  const control = start.closest(INTERACTIVE);
+  const el = control ?? start;
   return {
     tag: el.tagName.toLowerCase(),
-    text: textOf(el),
+    text: textOf(el, control != null),
     selector: shortSelector(el),
     href: el instanceof HTMLAnchorElement && el.href ? el.href : undefined,
     dataAttrs: dataAttrs(el),

@@ -131,7 +131,10 @@ export function App() {
     });
   };
 
-  const inspectable = !tab?.url || /^https?:/.test(tab.url);
+  // Chrome hides the URL of pages the extension can't access (chrome://, the Web Store), so a loaded
+  // tab without one can't be inspected.
+  const tabUrl = tab?.url || tab?.pendingUrl;
+  const inspectable = !tab || (tabUrl != null && /^https?:/.test(tabUrl));
   const hasEvents = groups.some((g) => g.rows.length > 0);
 
   return (
@@ -156,6 +159,7 @@ export function App() {
           <input
             className="search"
             type="search"
+            aria-label="Search events or watch variables"
             placeholder="Search, or watch variables: eVar12, events, page_location"
             value={query}
             onChange={(e) => updateQuery(e.target.value)}

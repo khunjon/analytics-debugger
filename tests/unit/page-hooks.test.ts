@@ -95,6 +95,15 @@ describe('page hooks', () => {
     expect(payloads()).toEqual([['event', 'add_to_cart', { value: 10 }]]);
   });
 
+  it('keeps the first 300 items of a long array', () => {
+    win.dataLayer = [];
+    install();
+    win.dataLayer.push({ items: Array.from({ length: 1000 }, (_, i) => i) });
+    const items = (payloads()[0] as { items: unknown[] }).items;
+    expect(items).toHaveLength(301);
+    expect(items.slice(-2)).toEqual([299, '[700 more items]']);
+  });
+
   it('records Adobe Tags direct calls', () => {
     const track = vi.fn();
     win._satellite = { track };
@@ -133,6 +142,7 @@ describe('page hooks', () => {
   it('traces Adobe Tags rules from the first rule the library runs', () => {
     install();
     expect(win._satellite).toBeUndefined();
+    expect(Object.keys(win)).not.toContain('_satellite');
     const notify = loadTagsLibrary();
     // Back to a plain property once the library has assigned it.
     expect(Object.getOwnPropertyDescriptor(win, '_satellite')).toMatchObject({ writable: true });

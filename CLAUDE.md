@@ -10,7 +10,7 @@ The user runs the extension from `dist/chrome`, loaded unpacked. A Stop hook (`.
 - `npm test`, `npm run typecheck`
 - `npm run test:e2e` for anything touching capture, storage, the background worker, content scripts, or the update path. It also writes panel screenshots to `test-results/`; look at them after UI changes.
 
-Deploy marks the installed copy as a dev build (named "Analytics Debugger Dev", icons from `scripts/dev-icon/`) by rewriting its manifest; release builds are untouched. Anything that changes the manifest could leave the user's extension disabled if Chrome rejects it, so try such changes first with `DEPLOY_DIR=<temp dir> node scripts/deploy.mjs --force` and load that folder in Playwright.
+Deploy marks the installed copy as a dev build (named "Analytics Debugger Dev", icons from `scripts/dev-icon/`, plus `unlimitedStorage` for the live-update handoff) by rewriting its manifest; release builds are untouched. Deploy refuses a target folder that isn't empty and has no `build.json`, because it deletes every file there that isn't part of the build. Anything that changes the manifest could leave the user's extension disabled if Chrome rejects it, so try such changes first with `DEPLOY_DIR=<temp dir> node scripts/deploy.mjs --force` and load that folder in Playwright.
 
 Changes to `background.js`, content scripts or the manifest reload the whole extension, which closes the user's side panel. Everything else is a panel-only update that refreshes in place, so prefer keeping logic in the panel. URL matching is in `lib/decoders/match.ts` for that reason: the background bundles only that file, not the decoders.
 
@@ -27,5 +27,6 @@ This is a public GitHub repo (khunjon/analytics-debugger, MIT). Never commit cli
 - Code in `lib/page-hooks.ts` runs inside client sites. It must never throw into the page or change behavior. Wrappers call straight through and never dispatch dynamically, because that causes recursion with GTM's own push wrapper.
 - The service worker can stop at any time. `chrome.storage.session` is the source of truth, and the in-memory cache in `background.ts` is only an optimization.
 - In Playwright, the service worker appears before its listeners are registered (the e2e helpers wait for `onBeforeRequest.hasListeners()`). Developer mode must also be on, or Chrome disables an unpacked extension that calls `chrome.runtime.reload()`; the helpers turn it on.
+- Page events are untrusted: any page script can fire the event the relay forwards. The background rebuilds each one with `sanitizePageEvent()` in `lib/page-event.ts`, which keeps only the fields it lists, so a new field on a page event has to be added there too.
 - Decoders are pure and run in the panel. Keep them free of extension APIs so the planned Playwright crawler can reuse them.
 - `tsconfig` uses `noUncheckedIndexedAccess` (from WXT).

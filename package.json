@@ -21,9 +21,9 @@
     "postinstall": "wxt prepare"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
-    "@types/chrome": "^0.3.4",
-    "@types/node": "^26.6.3",
+    "@playwright/test": "^1.64.0",
+    "@types/chrome": "^0.3.5",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@wxt-dev/module-react": "^1.2.2",

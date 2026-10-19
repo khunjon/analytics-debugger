@@ -167,6 +167,16 @@ describe('HAR import', () => {
     expect(issues(timeline)).toEqual(issues(original));
   });
 
+  it('keeps fractional timestamps, so relative times match the live view', () => {
+    const original = capture();
+    // Chrome's webRequest times carry fractions of a millisecond; 14.6 ms shows as +0.01s or +0.02s depending on rounding.
+    original.pages[0]!.ts += 0.4;
+    for (const e of original.events) e.ts += 0.6;
+    const { timeline } = roundTrip(timelineToHar(original, CREATOR));
+    expect(timeline.pages.map((p) => p.ts)).toEqual(original.pages.map((p) => p.ts));
+    expect(timeline.events.map((e) => e.ts)).toEqual(original.events.map((e) => e.ts));
+  });
+
   it('rejects files that are not HAR', () => {
     expect(() => harToTimeline({ hello: 'world' })).toThrow(/Not a HAR file/);
     expect(() => harToTimeline('nope')).toThrow(/Not a HAR file/);

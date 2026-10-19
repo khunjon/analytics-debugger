@@ -55,6 +55,8 @@ export interface HarEntry {
   _redirectedFrom?: string;
   /** Order of arrival on the tab, for events with the same timestamp. */
   _seq?: number;
+  /** The exact timestamp: Chrome's are fractional, `startedDateTime` keeps whole milliseconds. */
+  _ts?: number;
 }
 
 export interface HarPage {
@@ -63,6 +65,8 @@ export interface HarPage {
   /** The page URL, as DevTools writes it. */
   title: string;
   pageTimings: Record<string, number>;
+  /** The exact timestamp, as on entries. */
+  _ts?: number;
 }
 
 export interface Har {
@@ -76,6 +80,9 @@ export interface Har {
 }
 
 const iso = (ts: number) => new Date(ts).toISOString();
+/** An exported `_ts` when there is one, else the ISO time. Relative times would otherwise shift by up to 10 ms when rounded. */
+const timeOf = (exact: unknown, started: unknown) =>
+  typeof exact === 'number' && Number.isFinite(exact) ? exact : Date.parse(typeof started === 'string' ? started : '');
 
 function queryString(url: string): NameValue[] {
   try {
@@ -120,6 +127,7 @@ function hitEntry(hit: HitEvent): HarEntry {
     _resourceType: hit.resourceType,
     ...(hit.redirectedFrom ? { _redirectedFrom: hit.redirectedFrom } : {}),
     ...(hit.seq !== undefined ? { _seq: hit.seq } : {}),
+    _ts: hit.ts,
   };
 }
 
@@ -132,7 +140,7 @@ export function timelineToHar(t: TabTimeline, creator: { name: string; version: 
     log: {
       version: '1.2',
       creator,
-      pages: pages.map((p) => ({ startedDateTime: iso(p.ts), id: p.id, title: p.url, pageTimings: {} })),
+      pages: pages.map((p) => ({ startedDateTime: iso(p.ts), id: p.id, title: p.url, pageTimings: {}, _ts: p.ts })),
       entries: events.filter((e): e is HitEvent => e.kind === 'hit').map(hitEntry),
       _analyticsDebugger: { version: 1, events: events.filter((e) => e.kind !== 'hit') },
     },
@@ -215,7 +223,7 @@ export function harToTimeline(input: unknown, prefix = importPrefix()): HarImpor
   const harPages = new Map<string, { url: string; ts: number; page?: PageRecord }>();
   for (const p of Array.isArray(log.pages) ? log.pages : []) {
     if (!isObject(p) || typeof p.id !== 'string') continue;
-    const ts = Date.parse(str(p.startedDateTime) ?? '');
+    const ts = timeOf(p._ts, p.startedDateTime);
     harPages.set(p.id, { url: str(p.title) ?? '', ts });
   }
   const fromHarPage = (ref: unknown, ts: number): PageRecord | undefined => {
@@ -228,7 +236,7 @@ export function harToTimeline(input: unknown, prefix = importPrefix()): HarImpor
     isObject(log._analyticsDebugger) && Array.isArray(log._analyticsDebugger.events) ? log._analyticsDebugger.events : [];
 
   const entries = (log.entries as unknown[])
-    .map((entry, index) => ({ entry, index, ts: isObject(entry) ? Date.parse(str(entry.startedDateTime) ?? '') : NaN }))
+    .map((entry, index) => ({ entry, index, ts: isObject(entry) ? timeOf(entry._ts, entry.startedDateTime) : NaN }))
     .filter((x): x is { entry: Record<string, any>; index: number; ts: number } => Number.isFinite(x.ts))
     .sort((a, b) => a.ts - b.ts || a.index - b.index);
 

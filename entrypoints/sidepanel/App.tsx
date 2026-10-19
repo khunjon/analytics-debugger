@@ -1,9 +1,10 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { browser } from 'wxt/browser';
 import { analyze } from '@/lib/checks';
 import { hostOf } from '@/lib/format';
-import type { RuntimeMessage } from '@/lib/types';
+import type { RuntimeMessage, TabTimeline } from '@/lib/types';
 import { buildGroups, CATEGORIES, filterGroups, HIDDEN_BY_DEFAULT, rowCategory, type Category } from '@/lib/view';
+import { downloadHar, openCapture, useCapture } from './capture';
 import { TimelineContext } from './context';
 import { useLiveUpdates, useStableArray, useStableIssues, useTargetTab, useTimeline } from './hooks';
 import { PageSection } from './PageSection';
@@ -40,12 +41,150 @@ function useToggleSet(initial: () => Set<string>) {
       return next;
     });
   }, []);
-  return [set, toggle, setSet] as const;
+  return [set, toggle] as const;
 }
 
 export function App() {
+  const captureId = useMemo(() => new URLSearchParams(location.search).get('capture'), []);
+  return captureId ? <CaptureApp id={captureId} /> : <LiveApp />;
+}
+
+/** "Open capture…": pick a HAR file and open it in its own window. */
+function useOpenCapture() {
+  const input = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const control = (
+    <>
+      <button type="button" className="tool" onClick={() => input.current?.click()} title="Open a HAR file from Charles or DevTools">
+        Open capture…
+      </button>
+      <input
+        ref={input}
+        type="file"
+        accept=".har,application/json"
+        aria-label="HAR file"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          setError(null);
+          openCapture(file).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+        }}
+      />
+    </>
+  );
+  const banner = error && (
+    <div className="banner error" role="alert">
+      {error}
+      <button type="button" className="link" onClick={() => setError(null)}>
+        Dismiss
+      </button>
+    </div>
+  );
+  return { control, banner };
+}
+
+/** The active tab's timeline, live from storage. */
+function LiveApp() {
   const { tabId, tab, pinned } = useTargetTab();
   const timeline = useTimeline(tabId);
+  const open = useOpenCapture();
+
+  const clear = () => {
+    if (tabId == null) return;
+    const msg: RuntimeMessage = { type: 'adbg:clear', tabId };
+    void browser.runtime.sendMessage(msg);
+  };
+
+  const popOut = () => {
+    if (tabId == null) return;
+    void browser.windows.create({
+      url: `${browser.runtime.getURL('/sidepanel.html')}?tabId=${tabId}`,
+      type: 'popup',
+      width: 560,
+      height: 900,
+    });
+  };
+
+  // Chrome hides the URL of pages the extension can't access (chrome://, the Web Store), so a loaded
+  // tab without one can't be inspected.
+  const tabUrl = tab?.url || tab?.pendingUrl;
+  const inspectable = !tab || (tabUrl != null && /^https?:/.test(tabUrl));
+
+  return (
+    <TimelineView
+      timeline={inspectable ? timeline : null}
+      title={hostOf(tab?.url) || 'No tab'}
+      titleTip={tab?.url}
+      pills={pinned && <span className="pill">pinned to tab</span>}
+      actions={
+        <>
+          {open.control}
+          {!pinned && (
+            <button type="button" className="tool" onClick={popOut} title="Open this tab's timeline in its own window">
+              Pop out
+            </button>
+          )}
+          <button type="button" className="tool" onClick={clear} title="Clear captured events for this tab">
+            Clear
+          </button>
+        </>
+      }
+      banner={open.banner}
+      empty={
+        !inspectable ? (
+          <div className="empty">Chrome doesn't let extensions inspect this page. Switch to a website tab.</div>
+        ) : (
+          <div className="empty">
+            <p>Nothing captured on this tab yet.</p>
+            <p>
+              <strong>Reload the page</strong> to capture its page-load hits.
+            </p>
+          </div>
+        )
+      }
+    />
+  );
+}
+
+/** A HAR file, read-only, in its own window. */
+function CaptureApp({ id }: { id: string }) {
+  const capture = useCapture(id);
+  const open = useOpenCapture();
+  useLayoutEffect(() => {
+    if (capture) document.title = `${capture.name} · Analytics Debugger`;
+  }, [capture]);
+  const note = capture && [capture.creator, capture.ignored ? `${capture.ignored} other requests left out` : ''].filter(Boolean).join(' · ');
+  return (
+    <TimelineView
+      timeline={capture?.timeline ?? null}
+      title={capture?.name ?? 'Capture'}
+      titleTip={note || undefined}
+      pills={<span className="pill imported">imported</span>}
+      actions={open.control}
+      banner={open.banner}
+      empty={
+        <div className="empty">
+          {capture === null ? <p>Loading…</p> : capture === undefined ? <p>This capture is gone. Open the file again.</p> : <p>No events in this file.</p>}
+        </div>
+      }
+    />
+  );
+}
+
+interface TimelineViewProps {
+  timeline: TabTimeline | null;
+  title: string;
+  titleTip?: string;
+  pills?: ReactNode;
+  actions: ReactNode;
+  banner?: ReactNode;
+  /** Shown when there are no events. */
+  empty: ReactNode;
+}
+
+function TimelineView({ timeline, title, titleTip, pills, actions, banner, empty }: TimelineViewProps) {
   const justUpdated = useLiveUpdates();
   const [hidden, setHidden] = useState(loadHidden);
   // Kept for the panel's lifetime, including in-place refreshes after an update.
@@ -64,7 +203,7 @@ export function App() {
       /* storage unavailable */
     }
   };
-  const [expanded, toggleExpanded, setExpanded] = useToggleSet(() => new Set());
+  const [expanded, toggleExpanded] = useToggleSet(() => new Set());
   const [collapsed, togglePage] = useToggleSet(() => new Set());
 
   const groups = useMemo(() => (timeline ? buildGroups(timeline) : []), [timeline]);
@@ -114,48 +253,34 @@ export function App() {
     [toggleExpanded],
   );
 
-  const clear = () => {
-    if (tabId == null) return;
-    const msg: RuntimeMessage = { type: 'adbg:clear', tabId };
-    void browser.runtime.sendMessage(msg);
-    setExpanded(new Set());
-  };
-
-  const popOut = () => {
-    if (tabId == null) return;
-    void browser.windows.create({
-      url: `${browser.runtime.getURL('/sidepanel.html')}?tabId=${tabId}`,
-      type: 'popup',
-      width: 560,
-      height: 900,
-    });
-  };
-
-  // Chrome hides the URL of pages the extension can't access (chrome://, the Web Store), so a loaded
-  // tab without one can't be inspected.
-  const tabUrl = tab?.url || tab?.pendingUrl;
-  const inspectable = !tab || (tabUrl != null && /^https?:/.test(tabUrl));
   const hasEvents = groups.some((g) => g.rows.length > 0);
+  const onExportPage = useCallback(
+    (pageId: string) => {
+      if (timeline) downloadHar(timeline, new Set([pageId]));
+    },
+    [timeline],
+  );
 
   return (
     <TimelineContext.Provider value={groups}>
       <div className="app">
         <header className="toolbar">
           <div className="toolbar-row">
-            <div className="tab-info" title={tab?.url}>
-              <span className="tab-host">{hostOf(tab?.url) || 'No tab'}</span>
-              {pinned && <span className="pill">pinned to tab</span>}
+            <div className="tab-info" title={titleTip}>
+              <span className="tab-host">{title}</span>
+              {pills}
               {justUpdated && <span className="pill updated">updated</span>}
             </div>
-            {!pinned && (
-              <button type="button" className="tool" onClick={popOut} title="Open this tab's timeline in its own window">
-                Pop out
-              </button>
-            )}
-            <button type="button" className="tool" onClick={clear} title="Clear captured events for this tab">
-              Clear
-            </button>
+            <div className="toolbar-actions">
+              {hasEvents && timeline && (
+                <button type="button" className="tool" onClick={() => downloadHar(timeline)} title="Save every page's hits as a HAR file">
+                  Export
+                </button>
+              )}
+              {actions}
+            </div>
           </div>
+          {banner}
           <input
             className="search"
             type="search"
@@ -199,32 +324,23 @@ export function App() {
         </header>
 
         <main className="list" ref={listRef} onScroll={onScroll}>
-          {!inspectable ? (
-            <div className="empty">Chrome doesn't let extensions inspect this page. Switch to a website tab.</div>
-          ) : !hasEvents ? (
-            <div className="empty">
-              <p>Nothing captured on this tab yet.</p>
-              <p>
-                <strong>Reload the page</strong> to capture its page-load hits.
-              </p>
-            </div>
-          ) : null}
-          {inspectable &&
-            visible.map((g, i) => (
-              <PageSection
-                key={g.page.id}
-                group={g}
-                full={byPage.get(g.page.id) ?? g}
-                isLatest={i === visible.length - 1}
-                collapsed={collapsed.has(g.page.id)}
-                onTogglePage={togglePage}
-                expanded={expanded}
-                onToggleRow={toggleRow}
-                watchTerms={watchTerms}
-                watch={watch}
-                issues={issues}
-              />
-            ))}
+          {!hasEvents && empty}
+          {visible.map((g, i) => (
+            <PageSection
+              key={g.page.id}
+              group={g}
+              full={byPage.get(g.page.id) ?? g}
+              isLatest={i === visible.length - 1}
+              collapsed={collapsed.has(g.page.id)}
+              onTogglePage={togglePage}
+              onExport={onExportPage}
+              expanded={expanded}
+              onToggleRow={toggleRow}
+              watchTerms={watchTerms}
+              watch={watch}
+              issues={issues}
+            />
+          ))}
         </main>
       </div>
     </TimelineContext.Provider>

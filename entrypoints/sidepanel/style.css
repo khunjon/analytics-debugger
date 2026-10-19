@@ -109,12 +109,14 @@ button {
 
 .toolbar-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 
+/* In a narrow panel the buttons wrap below the host rather than squeeze it. */
 .tab-info {
-  flex: 1;
+  flex: 1 1 140px;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -140,6 +142,29 @@ button {
 .pill.updated {
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.pill.imported {
+  color: var(--focus);
+  border-color: color-mix(in srgb, var(--focus) 45%, transparent);
+}
+
+.banner {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.banner.error {
+  color: var(--error);
 }
 
 .tool {

@@ -58,6 +58,8 @@ interface PageSectionProps {
   isLatest: boolean;
   collapsed: boolean;
   onTogglePage: (id: string) => void;
+  /** Save this page's hits as a HAR file. */
+  onExport: (id: string) => void;
   expanded: Set<string>;
   onToggleRow: (key: string) => void;
   watchTerms: string[];
@@ -71,6 +73,7 @@ export function PageSection({
   isLatest,
   collapsed,
   onTogglePage,
+  onExport,
   expanded,
   onToggleRow,
   watchTerms,
@@ -118,6 +121,11 @@ export function PageSection({
           >
             {copied === page.id ? 'Copied' : 'Copy'}
           </button>
+          {events > 0 && (
+            <button type="button" className="link" title="Save this page's hits as a HAR file" onClick={() => onExport(page.id)}>
+              Export
+            </button>
+          )}
         </div>
         {!collapsed && <EnvLines env={full.env} />}
       </div>

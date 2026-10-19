@@ -16,7 +16,7 @@ Changes to `background.js`, content scripts or the manifest reload the whole ext
 
 ## Public repo
 
-This is a public GitHub repo (khunjon/analytics-debugger, MIT). Never commit client data: when real hits become test fixtures, replace report suites, measurement IDs, datastream IDs, domains and visitor IDs with made-up values. Releases: bump `version` in `package.json` and push a matching `vX.Y.Z` tag; `.github/workflows/release.yml` publishes the zip.
+This is a public GitHub repo (khunjon/analytics-debugger, MIT). Never commit client data: when real hits become test fixtures, replace report suites, measurement IDs, datastream IDs, domains and visitor IDs with made-up values. `tests/unit/fixtures.test.ts` enforces the conventions (and so blocks the deploy); if it flags a value, sanitize the fixture rather than loosening the rule. Releases: bump `version` in `package.json`, add a matching `## X.Y.Z` section to `CHANGELOG.md` (the release notes), and push a `vX.Y.Z` tag; `.github/workflows/release.yml` publishes the zip.
 
 ## Gotchas
 

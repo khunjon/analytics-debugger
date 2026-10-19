@@ -55,13 +55,13 @@ A deploy only installs if the typecheck and unit tests pass, so a half-finished 
 
 ### Publishing a release
 
-Bump `version` in `package.json`, commit, then tag and push:
+Bump `version` in `package.json`, add a `## <version>` section to `CHANGELOG.md` (it becomes the release notes), commit, then tag and push:
 
 ```sh
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-The release workflow checks the tag matches `package.json`, runs the checks, and publishes the zip to Releases. To build the zip locally instead, run `npm run zip`; it lands in `.output/`.
+The release workflow checks the tag matches `package.json` and has a changelog section, runs the checks, and publishes the zip to Releases. To build the zip locally instead, run `npm run zip`; it lands in `.output/`.
 
 ## Using it
 
@@ -136,7 +136,7 @@ page-hooks.content.ts  ───►  relay.content.ts  ───►  background.
 
 Issues and pull requests are welcome. CI runs the typecheck, unit tests and end-to-end tests on every pull request; run `npm run typecheck && npm test && npm run test:e2e` locally first.
 
-**Never commit client data.** Real hits make the best decoder test fixtures, but replace report suite IDs, measurement IDs, domains, visitor IDs and anything else that identifies a client before adding them to `tests/`.
+**Never commit client data.** Real hits make the best decoder test fixtures, but replace report suite IDs, measurement IDs, domains, visitor IDs and anything else that identifies a client before adding them to `tests/`. `tests/unit/fixtures.test.ts` fails on report suites, IDs, domains and emails in `tests/` that don't follow the made-up conventions it lists.
 
 ## License
 

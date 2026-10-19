@@ -1,6 +1,6 @@
 {
   "name": "analytics-debugger",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Chrome side panel that shows which interactions send which analytics hits: Adobe Analytics, Adobe Web SDK and GA4, decoded.",
   "license": "MIT",
   "repository": {
